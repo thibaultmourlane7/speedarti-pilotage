@@ -506,3 +506,141 @@ button { cursor: pointer; }
   .demo-ai-btn { width: 40px; padding: 0; justify-content: center; }
   .demo-ai-btn b { display: none; }
 }
+
+/* =========================================================
+   V5 — PILOT-UI-018 à PILOT-UI-024
+   Assignation visuelle, édition tâche/projet, agenda et docs.
+   ========================================================= */
+.team-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.team-choice {
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 9px;
+  align-items: center;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #fff;
+  padding: 10px;
+  color: var(--text);
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.team-choice > span {
+  grid-row: 1 / 3;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 10px;
+  font-weight: 800;
+}
+.team-choice b { font-size: 12px; align-self: end; }
+.team-choice small { font-size: 10px; color: var(--muted); align-self: start; }
+.team-choice:hover { border-color: #93c5fd; background: #f8fbff; transform: translateY(-1px); }
+.team-choice.active {
+  border-color: var(--blue);
+  background: linear-gradient(135deg, #eff6ff, #f7fbff);
+  box-shadow: 0 0 0 3px rgba(37,99,235,.10);
+}
+.team-choice.active > span { background: linear-gradient(135deg, var(--blue), var(--cyan)); color: #fff; }
+
+.task-main-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.task-main-button:hover strong { color: var(--blue-strong); }
+.row-action, .card-edit {
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-size: 12px;
+  border-radius: 7px;
+}
+.row-action { padding: 7px 8px; }
+.row-action:hover, .card-edit:hover { background: #eff6ff; }
+.card-edit { width: 30px; height: 30px; flex: 0 0 auto; }
+.planning-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
+.secondary-mini { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; }
+.owner-pill, .date-chip, .demo-label {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.owner-pill { padding: 3px 7px; background: #eef6ff; color: #1d4ed8; font-size: 10px; font-weight: 700; }
+.date-chip { align-self: flex-start; margin-top: 3px; padding: 3px 7px; background: #ecfdf5; color: #047857; font-size: 10px; font-weight: 700; }
+.demo-label { padding: 3px 7px; background: #f1f5f9; color: var(--muted); font-size: 10px; }
+
+.compact-grid { margin-top: 14px; }
+.form-field input[type="date"], .form-field input[type="url"] { min-width: 0; }
+.range-field > span { display: flex; justify-content: space-between; align-items: center; }
+.range-field output { color: var(--blue); font-weight: 800; }
+.range-field input[type="range"] { height: 28px; padding: 0; accent-color: var(--blue); box-shadow: none; border: 0; }
+.form-note { margin: 14px 0 0; padding: 10px 12px; border-radius: 8px; background: #f8fafc; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.info-blocker { border-color: #fecaca !important; background: #fff7f7 !important; }
+
+.agenda-row { width: 100%; text-align: left; border-left: 0; border-right: 0; border-top: 0; background: #fff; color: var(--text); }
+.agenda-row:hover { background: #f8fbff; }
+.agenda-row.source-deadline { box-shadow: inset 3px 0 0 var(--red); }
+.agenda-row.source-speedarti:not(.source-deadline) { box-shadow: inset 3px 0 0 var(--green); }
+.agenda-row.source-google { box-shadow: inset 3px 0 0 var(--violet); }
+
+.documents-list .doc-row button { margin-left: auto; }
+
+@media (max-width: 900px) {
+  .team-picker { grid-template-columns: 1fr; }
+  .team-choice { min-height: 58px; }
+}
+
+@media (max-width: 767px) {
+  .row-action { display: none; }
+  .card-actions { grid-template-columns: 1fr; }
+  .planning-card { min-height: 132px; }
+  .planning-card .mini-action { min-height: 38px; }
+  .team-picker { grid-template-columns: 1fr; }
+  .team-choice { min-height: 58px; }
+  .agenda-row time { width: 82px; }
+}
+
+.mobile-roadmap-tabs { display: none; }
+@media (max-width: 767px) {
+  .mobile-roadmap-tabs {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    margin: 0 -16px 14px;
+    padding: 0 16px 4px;
+    scrollbar-width: none;
+  }
+  .mobile-roadmap-tabs::-webkit-scrollbar { display: none; }
+  .mobile-roadmap-tabs button {
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: #475569;
+    border-radius: 999px;
+    padding: 8px 11px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .mobile-roadmap-tabs button.active { border-color: var(--blue); background: #dbeafe; color: #1d4ed8; }
+  .planning-column:nth-child(3) { display: none; }
+  .planning-column:nth-child(3)::before { content: none; }
+  .planning-column.mobile-active { display: block; }
+}
+@media (max-width: 767px) {
+  .page-header .primary-btn, .page-header .secondary-btn { display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 11px; font-size: 11px; flex: 0 0 auto; }
+  .page-header { align-items: center; }
+}

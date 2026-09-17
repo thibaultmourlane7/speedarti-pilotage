@@ -16,6 +16,13 @@ let planningFilterPriority = 'all';
 let activityFilter = 'all';
 let notificationFilter = 'all';
 let aiSimulationOpen = false;
+let taskEditId = null;
+let projectEditId = null;
+let calendarView = 'today';
+let documentSearch = '';
+let documentProjectFilter = 'all';
+let documentModalOpen = false;
+let mobilePlanningBucket = 'this_month';
 
 const app = document.querySelector('#app');
 
@@ -63,6 +70,13 @@ function task(id) { return state.tasks.find(x => x.id === id); }
 
 function formatTime(iso) { return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function formatDate(iso) { return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }); }
+function dateKey(value) { return value ? String(value).slice(0, 10) : ''; }
+function toDueIso(value) { return value ? `${value}T18:00:00+02:00` : null; }
+function personInitials(name = '') { return name.split(/\s|-/).filter(Boolean).slice(0,2).map(x => x[0]).join('').toUpperCase(); }
+function teamPicker(targetId, selectedId) {
+  const selected = selectedId || state.currentUser.id;
+  return `<div class="team-picker" data-picker="${targetId}"><input type="hidden" id="${targetId}" value="${selected}" />${state.team.map(m => `<button type="button" class="team-choice ${m.id === selected ? 'active' : ''}" data-team-target="${targetId}" data-team-value="${m.id}"><span>${personInitials(m.name)}</span><b>${esc(m.name)}</b><small>${esc(m.role)}</small></button>`).join('')}</div>`;
+}
 
 function persist(tag, message, details = {}) {
   saveState(state);
@@ -112,6 +126,7 @@ function layout(content) {
       ${taskModalOpen ? renderTaskModal() : ''}
       ${projectModalOpen ? renderProjectModal() : ''}
       ${aiSimulationOpen ? renderAiSimulationModal() : ''}
+      ${documentModalOpen ? renderDocumentModal() : ''}
     </div>
   `;
 }
@@ -142,7 +157,7 @@ function renderToday() {
     <section class="section">
       <div class="section-title"><h2>Mes tâches</h2><button class="text-button" data-action="quick-add">+ Ajouter</button></div>
       <div class="task-list">
-        ${myTasks.map(t => `<div class="task-row"><button class="checkbox" data-complete="${t.id}" aria-label="Terminer"></button><div class="task-main"><strong>${esc(t.title)}</strong><small>${esc(project(t.projectId)?.name || 'Sans projet')}</small></div>${priorityBadge(t.priority)}</div>`).join('') || `<div class="empty-line">Aucune tâche prévue aujourd’hui.</div>`}
+        ${myTasks.map(t => `<div class="task-row"><button class="checkbox" data-complete="${t.id}" aria-label="Terminer"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${esc(project(t.projectId)?.name || 'Sans projet')} · ${esc(teamName(t.assignedTo))}</small></button>${priorityBadge(t.priority)}<button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || `<div class="empty-line">Aucune tâche prévue aujourd’hui.</div>`}
       </div>
     </section>
 
@@ -195,17 +210,19 @@ function renderPlanning() {
         ${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${planningFilterPriority === value ? 'selected' : ''}>${label}</option>`).join('')}
       </select>
     </div>
+    <div class="mobile-roadmap-tabs">${buckets.map(bucket => `<button class="${mobilePlanningBucket === bucket ? 'active' : ''}" data-mobile-bucket="${bucket}">${planningLabels[bucket]}</button>`).join('')}</div>
     <div class="planning-board">
       ${buckets.map(bucket => {
         const items = filteredTasks.filter(t => t.planningBucket === bucket).sort((a,b) => a.sortOrder - b.sortOrder);
-        return `<section class="planning-column" data-bucket="${bucket}">
+        return `<section class="planning-column ${mobilePlanningBucket === bucket ? 'mobile-active' : ''}" data-bucket="${bucket}">
           <header><h2>${planningLabels[bucket]}</h2><span>${items.length}</span></header>
           <div class="planning-dropzone" data-dropzone="${bucket}">
             ${items.map(t => `<article class="planning-card ${t.needsPlanning && t.planningStatus === 'unplanned' ? 'needs-planning' : ''}" draggable="true" data-task="${t.id}">
-              <strong>${esc(t.title)}</strong>
+              <div class="planning-card-head"><strong>${esc(t.title)}</strong><button class="card-edit" data-edit-task="${t.id}" title="Modifier">✎</button></div>
               <small>${esc(project(t.projectId)?.name || 'Sans projet')}</small>
-              <footer><span>${esc(teamName(t.assignedTo))}</span>${priorityBadge(t.priority)}</footer>
-              ${t.needsPlanning && t.planningStatus === 'unplanned' ? `<button class="mini-action" data-plan="${t.id}">Positionner</button>` : ''}
+              ${t.scheduledFor ? `<div class="date-chip">Prévue ${formatDate(t.scheduledFor)}</div>` : ''}
+              <footer><span class="owner-pill">${esc(teamName(t.assignedTo))}</span>${priorityBadge(t.priority)}</footer>
+              <div class="card-actions"><button class="mini-action" data-plan="${t.id}">${t.needsPlanning && t.planningStatus === 'unplanned' ? 'Planifier' : 'Déplacer / dater'}</button><button class="mini-action secondary-mini" data-edit-task="${t.id}">Modifier</button></div>
             </article>`).join('') || `<div class="planning-empty">Aucune tâche</div>`}
           </div>
         </section>`;
@@ -241,36 +258,64 @@ function renderProjectDetail(id) {
   if (!p) { selectedProjectId = null; return renderProjects(); }
   const tasks = state.tasks.filter(t => t.projectId === id);
   const docs = state.documents.filter(d => d.projectId === id);
-  const activities = state.activity.filter(a => a.projectId === id).slice(0,3);
+  const activities = state.activity.filter(a => a.projectId === id).slice(0,5);
   return `
     <button class="back-btn" id="backProjects">← Projets</button>
-    ${pageHeader(p.name, teamName(p.owner))}
-    <div class="project-detail-head"><div>${statusBadge(p.status)} ${priorityBadge(p.priority)}</div><strong>${p.progress} %</strong></div>
+    ${pageHeader(p.name, teamName(p.owner), `<button class="secondary-btn" data-edit-project="${p.id}">Modifier le projet</button>`)}
+    <div class="project-detail-head"><div>${statusBadge(p.status)} ${priorityBadge(p.priority)} <span class="owner-pill">${esc(teamName(p.owner))}</span></div><strong>${p.progress} %</strong></div>
     <div class="progress large"><i style="width:${p.progress}%"></i></div>
     <section class="section info-grid">
-      <div><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong></div>
+      <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong></div>
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
     </section>
-    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><div class="task-main"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]}</small></div>${priorityBadge(t.priority)}</div>`).join('')}</div></section>
-    <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div><button class="text-button">Ouvrir →</button></div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
+    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche.</div>'}</div></section>
+    <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
 }
 
 function renderCalendar() {
-  const events = [...state.calendarEvents.map(e => ({...e, kind:'calendar'})), ...state.tasks.filter(t => t.dueAt).map(t => ({ id:t.id, at:t.dueAt, title:t.title, source:'SpeedArti', kind:'task' }))].sort((a,b) => new Date(a.at)-new Date(b.at));
-  return pageHeader('Agenda', 'Rendez-vous et échéances au même endroit') + `
-    <div class="tabs"><button class="active">Aujourd’hui</button><button>Semaine</button><button>Mois</button></div>
-    <section class="section"><div class="date-heading">Jeudi 17 septembre</div><div class="agenda-list">${events.map(e => `<div class="agenda-row ${e.source === 'google' ? 'source-google' : 'source-speedarti'}"><time>${formatTime(e.at)}</time><div><strong>${esc(e.title)}</strong><small>${e.source === 'google' ? 'Google Calendar' : 'SpeedArti'}</small></div></div>`).join('')}</div></section>`;
+  const ref = new Date('2026-09-17T12:00:00+02:00');
+  const startWeek = new Date('2026-09-14T00:00:00+02:00');
+  const endWeek = new Date('2026-09-20T23:59:59+02:00');
+  const events = [
+    ...state.calendarEvents.map(e => ({...e, source:'google', label:'Google Calendar'})),
+    ...state.tasks.filter(t => t.scheduledFor).map(t => ({ id:`scheduled-${t.id}`, taskId:t.id, at:`${t.scheduledFor}T09:00:00+02:00`, title:t.title, source:'SpeedArti', label:'Tâche planifiée' })),
+    ...state.tasks.filter(t => t.dueAt).map(t => ({ id:`due-${t.id}`, taskId:t.id, at:t.dueAt, title:t.title, source:'SpeedArti', label:'Échéance' }))
+  ].sort((a,b) => new Date(a.at)-new Date(b.at));
+
+  const visible = events.filter(e => {
+    const d = new Date(e.at);
+    if (calendarView === 'today') return dateKey(e.at) === '2026-09-17';
+    if (calendarView === 'week') return d >= startWeek && d <= endWeek;
+    return d.getFullYear() === ref.getFullYear() && d.getMonth() === ref.getMonth();
+  });
+
+  const title = calendarView === 'today' ? 'Jeudi 17 septembre' : calendarView === 'week' ? 'Semaine du 14 au 20 septembre' : 'Septembre 2026';
+  return pageHeader('Agenda', 'Rendez-vous, tâches prévues et échéances au même endroit') + `
+    <div class="tabs">
+      <button class="${calendarView === 'today' ? 'active' : ''}" data-calendar-view="today">Aujourd’hui</button>
+      <button class="${calendarView === 'week' ? 'active' : ''}" data-calendar-view="week">Semaine</button>
+      <button class="${calendarView === 'month' ? 'active' : ''}" data-calendar-view="month">Mois</button>
+    </div>
+    <section class="section"><div class="date-heading">${title}</div><div class="agenda-list">${visible.map(e => `<button class="agenda-row ${e.source === 'google' ? 'source-google' : 'source-speedarti'} ${e.label === 'Échéance' ? 'source-deadline' : ''}" ${e.taskId ? `data-edit-task="${e.taskId}"` : ''}><time>${calendarView === 'today' ? formatTime(e.at) : `${dateKey(e.at).slice(8,10)}/${dateKey(e.at).slice(5,7)} ${formatTime(e.at)}`}</time><div><strong>${esc(e.title)}</strong><small>${esc(e.label)}</small></div></button>`).join('') || '<div class="empty-line">Aucun élément dans cette période.</div>'}</div></section>`;
 }
 
 function renderDocuments() {
-  return pageHeader('Documents', 'Les fichiers restent dans Google Drive', '<button class="primary-btn">+ Lier un document Drive</button>') + `
-    <div class="toolbar"><input class="search-field" placeholder="Rechercher un fichier…" /><select><option>Tous les projets</option></select></div>
-    <div class="documents-list">${state.projects.map(p => {
-      const docs = state.documents.filter(d => d.projectId === p.id);
-      if (!docs.length) return '';
-      return `<section class="section doc-group"><h2>${esc(p.name)}</h2>${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type)} · ${esc(d.source)}</small></div><button class="text-button">Ouvrir →</button></div>`).join('')}</section>`;
-    }).join('')}</div>`;
+  const q = documentSearch.trim().toLowerCase();
+  const docs = state.documents.filter(d => {
+    if (documentProjectFilter !== 'all' && d.projectId !== documentProjectFilter) return false;
+    if (q && !`${d.name} ${d.type || ''} ${project(d.projectId)?.name || ''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const grouped = state.projects.map(p => ({ project:p, docs:docs.filter(d => d.projectId === p.id) })).filter(g => g.docs.length);
+  const orphan = docs.filter(d => !d.projectId);
+  return pageHeader('Documents', 'Les fichiers restent dans Google Drive : Pilotage ne conserve que la référence', '<button class="primary-btn" data-action="link-document">+ Lier un document Drive</button>') + `
+    <div class="toolbar"><input id="documentSearch" class="search-field" value="${esc(documentSearch)}" placeholder="Rechercher un fichier…" /><select id="documentProjectFilter"><option value="all">Tous les projets</option>${state.projects.map(p => `<option value="${p.id}" ${documentProjectFilter === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+    <div class="documents-list">
+      ${grouped.map(({project:p,docs:list}) => `<section class="section doc-group"><h2>${esc(p.name)}</h2>${list.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('')}</section>`).join('')}
+      ${orphan.length ? `<section class="section doc-group"><h2>Sans projet</h2>${orphan.map(d => `<div class="doc-row"><span class="doc-icon doc-document">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('')}</section>` : ''}
+      ${!docs.length ? '<div class="empty-state">Aucun document trouvé.</div>' : ''}
+    </div>`;
 }
 
 function renderActivityItem(a) {
@@ -327,58 +372,66 @@ function renderNotifications() {
 function renderPlanningModal(taskId) {
   const t = task(taskId);
   if (!t) return '';
-  return `<div class="modal-backdrop" id="modalBackdrop"></div><div class="modal-card" role="dialog" aria-modal="true">
-    <header><div><small>NOUVEL ÉLÉMENT</small><h2>Planifier cette tâche</h2></div><button class="icon-btn" id="closePlan">×</button></header>
-    <div class="modal-task"><strong>${esc(t.title)}</strong><span>${esc(project(t.projectId)?.name || 'Projet à définir')}</span></div>
-    <div class="meta-grid"><div><small>Responsable proposé</small><strong>${esc(teamName(t.assignedTo))}</strong></div><div><small>Priorité</small><strong>${esc(priorityLabels[t.priority])}</strong></div>${t.sourceType ? `<div class="meta-wide"><small>Origine</small><strong>${esc(t.sourceType === 'claude' ? 'Claude' : t.sourceType === 'chatgpt' ? 'ChatGPT' : t.sourceType)}</strong></div>` : ''}</div>
-    <fieldset class="plan-options"><legend>Quand veux-tu le prévoir ?</legend>
-      ${['this_week','this_month','next_3_months','later','backlog'].map(bucket => `<label><input type="radio" name="planBucket" value="${bucket}" ${bucket === 'backlog' ? 'checked' : ''}/><span>${planningLabels[bucket]}</span></label>`).join('')}
+  const selectedBucket = t.planningBucket || 'backlog';
+  return `<div class="modal-backdrop" id="modalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
+    <header><div><small>${t.needsPlanning ? 'NOUVEL ÉLÉMENT' : 'PLANIFICATION'}</small><h2>${t.needsPlanning ? 'Planifier cette tâche' : 'Déplacer ou dater la tâche'}</h2></div><button class="icon-btn" id="closePlan">×</button></header>
+    <div class="modal-task"><strong>${esc(t.title)}</strong><span>${esc(project(t.projectId)?.name || 'Sans projet')}</span></div>
+    <div class="form-grid compact-grid">
+      <div class="form-field form-field-full"><span>Responsable</span>${teamPicker('planOwner', t.assignedTo)}</div>
+      <label class="form-field"><span>Jour prévu (optionnel)</span><input id="planScheduledFor" type="date" value="${esc(t.scheduledFor || '')}" /></label>
+      <label class="form-field"><span>Échéance (optionnelle)</span><input id="planDueAt" type="date" value="${esc(dateKey(t.dueAt))}" /></label>
+    </div>
+    <fieldset class="plan-options"><legend>Période Roadmap</legend>
+      ${['this_week','this_month','next_3_months','later','backlog'].map(bucket => `<label><input type="radio" name="planBucket" value="${bucket}" ${bucket === selectedBucket ? 'checked' : ''}/><span>${planningLabels[bucket]}</span></label>`).join('')}
     </fieldset>
-    ${t.suggestedBucket ? `<p class="ai-suggestion">Suggestion IA : <strong>${planningLabels[t.suggestedBucket]}</strong></p>` : ''}
-    <footer><button class="secondary-btn" id="cancelPlan">Annuler</button><button class="primary-btn" id="confirmPlan" data-task="${t.id}">Ajouter</button></footer>
+    ${t.suggestedBucket && t.needsPlanning ? `<p class="ai-suggestion">Suggestion IA : <strong>${planningLabels[t.suggestedBucket]}</strong></p>` : ''}
+    <footer><button class="secondary-btn" id="cancelPlan">Annuler</button><button class="primary-btn" id="confirmPlan" data-task="${t.id}">Enregistrer</button></footer>
   </div>`;
 }
 
-
 function renderTaskModal() {
-  const defaultProject = taskModalProjectId || '';
+  const existing = taskEditId ? task(taskEditId) : null;
+  const defaultProject = existing?.projectId || taskModalProjectId || '';
+  const owner = existing?.assignedTo || state.currentUser.id;
+  const priority = existing?.priority || 'medium';
+  const status = existing?.status || 'todo';
+  const bucket = existing?.planningBucket || 'this_week';
+  const scheduled = existing?.scheduledFor || (!existing && currentPage === 'today' ? '2026-09-17' : '');
+  const due = dateKey(existing?.dueAt);
   return `<div class="modal-backdrop" id="taskModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
-    <header><div><small>NOUVELLE TÂCHE</small><h2>Ajouter une tâche</h2></div><button class="icon-btn" id="closeTaskModal">×</button></header>
+    <header><div><small>${existing ? 'MODIFIER LA TÂCHE' : 'NOUVELLE TÂCHE'}</small><h2>${existing ? esc(existing.title) : 'Ajouter une tâche'}</h2></div><button class="icon-btn" id="closeTaskModal">×</button></header>
     <div class="form-grid">
-      <label class="form-field form-field-full"><span>Titre</span><input id="taskTitle" type="text" placeholder="Ex. Tester la nouvelle intégration" maxlength="120" /></label>
+      <label class="form-field form-field-full"><span>Titre</span><input id="taskTitle" type="text" value="${esc(existing?.title || '')}" placeholder="Ex. Tester la nouvelle intégration" maxlength="120" /></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="taskProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${defaultProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
-      <label class="form-field"><span>Responsable</span><select id="taskOwner">${state.team.map(m => `<option value="${m.id}" ${m.id === state.currentUser.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
-      <label class="form-field"><span>Priorité</span><select id="taskPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-      <label class="form-field form-field-full"><span>Planification</span><select id="taskPlanning">
-        <option value="today">Aujourd’hui</option>
-        <option value="this_week">Cette semaine</option>
-        <option value="this_month">Ce mois</option>
-        <option value="next_3_months">1 à 3 mois</option>
-        <option value="later">Plus tard</option>
-        <option value="backlog">À organiser</option>
-      </select></label>
+      <div class="form-field form-field-full"><span>Responsable — clique sur une personne</span>${teamPicker('taskOwner', owner)}</div>
+      <label class="form-field"><span>Priorité</span><select id="taskPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field"><span>État</span><select id="taskStatus">${Object.entries(statusLabels).map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Période Roadmap</span><select id="taskPlanning">${['backlog','this_week','this_month','next_3_months','later'].map(value => `<option value="${value}" ${value === bucket ? 'selected' : ''}>${planningLabels[value]}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Jour prévu</span><input id="taskScheduledFor" type="date" value="${esc(scheduled)}" /></label>
+      <label class="form-field"><span>Échéance</span><input id="taskDueAt" type="date" value="${esc(due)}" /></label>
     </div>
-    <footer><button class="secondary-btn" id="cancelTaskModal">Annuler</button><button class="primary-btn" id="saveTask">Ajouter la tâche</button></footer>
+    <footer><button class="secondary-btn" id="cancelTaskModal">Annuler</button><button class="primary-btn" id="saveTask">${existing ? 'Enregistrer' : 'Ajouter la tâche'}</button></footer>
   </div>`;
 }
 
 function renderProjectModal() {
+  const existing = projectEditId ? project(projectEditId) : null;
+  const owner = existing?.owner || state.currentUser.id;
+  const priority = existing?.priority || 'medium';
+  const status = existing?.status || 'in_progress';
+  const progress = Number(existing?.progress || 0);
   return `<div class="modal-backdrop" id="projectModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
-    <header><div><small>NOUVEAU PROJET</small><h2>Créer un projet</h2></div><button class="icon-btn" id="closeProjectModal">×</button></header>
+    <header><div><small>${existing ? 'MODIFIER LE PROJET' : 'NOUVEAU PROJET'}</small><h2>${existing ? esc(existing.name) : 'Créer un projet'}</h2></div><button class="icon-btn" id="closeProjectModal">×</button></header>
     <div class="form-grid">
-      <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
-      <label class="form-field"><span>Responsable</span><select id="projectOwner">${state.team.map(m => `<option value="${m.id}" ${m.id === state.currentUser.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
-      <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-      <label class="form-field"><span>État</span><select id="projectStatus">
-        <option value="todo">À faire</option>
-        <option value="in_progress" selected>En cours</option>
-        <option value="to_validate">À valider</option>
-        <option value="to_test">À tester</option>
-        <option value="paused">En pause</option>
-      </select></label>
-      <label class="form-field form-field-full"><span>Prochaine action</span><input id="projectNextAction" type="text" placeholder="Ex. Définir le cahier fonctionnel" maxlength="160" /></label>
+      <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" value="${esc(existing?.name || '')}" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
+      <div class="form-field form-field-full"><span>Responsable — clique sur une personne</span>${teamPicker('projectOwner', owner)}</div>
+      <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field"><span>État</span><select id="projectStatus">${Object.entries(statusLabels).map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full range-field"><span>Progression <output id="projectProgressValue">${progress} %</output></span><input id="projectProgress" type="range" min="0" max="100" step="5" value="${progress}" /></label>
+      <label class="form-field form-field-full"><span>Blocage actuel</span><input id="projectBlocker" type="text" value="${esc(existing?.blocker || '')}" placeholder="Laisser vide s’il n’y a aucun blocage" maxlength="180" /></label>
+      <label class="form-field form-field-full"><span>Prochaine action</span><input id="projectNextAction" type="text" value="${esc(existing?.nextAction || '')}" placeholder="Ex. Définir le cahier fonctionnel" maxlength="160" /></label>
     </div>
-    <footer><button class="secondary-btn" id="cancelProjectModal">Annuler</button><button class="primary-btn" id="saveProject">Créer le projet</button></footer>
+    <footer><button class="secondary-btn" id="cancelProjectModal">Annuler</button><button class="primary-btn" id="saveProject">${existing ? 'Enregistrer' : 'Créer le projet'}</button></footer>
   </div>`;
 }
 
@@ -392,7 +445,7 @@ function renderAiSimulationModal() {
       </select></label>
       <label class="form-field form-field-full"><span>Nouvel élément détecté</span><input id="aiTaskTitle" type="text" value="Ajouter le contrôle automatique des marges" maxlength="120" /></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
-      <label class="form-field"><span>Responsable proposé</span><select id="aiOwner">${state.team.map(m => `<option value="${m.id}" ${m.id === state.currentUser.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+      <div class="form-field form-field-full"><span>Responsable proposé</span>${teamPicker('aiOwner', state.currentUser.id)}</div>
       <label class="form-field"><span>Priorité proposée</span><select id="aiPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field form-field-full"><span>Suggestion IA pour la Roadmap</span><select id="aiSuggestedBucket">
         ${['this_week','this_month','next_3_months','later','backlog'].map(value => `<option value="${value}" ${value === 'this_month' ? 'selected' : ''}>${planningLabels[value]}</option>`).join('')}
@@ -400,6 +453,20 @@ function renderAiSimulationModal() {
     </div>
     <div class="ai-demo-rule"><strong>Règle :</strong> l’IA suggère une période, mais elle ne décide jamais à ta place.</div>
     <footer><button class="secondary-btn" id="cancelAiSimulation">Annuler</button><button class="primary-btn ai-submit-btn" id="runAiSimulation">Simuler l’arrivée</button></footer>
+  </div>`;
+}
+
+function renderDocumentModal() {
+  return `<div class="modal-backdrop" id="documentModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
+    <header><div><small>RÉFÉRENCE DRIVE</small><h2>Lier un document</h2></div><button class="icon-btn" id="closeDocumentModal">×</button></header>
+    <div class="form-grid">
+      <label class="form-field form-field-full"><span>Nom</span><input id="documentName" type="text" placeholder="Ex. Cahier fonctionnel V2" maxlength="140" /></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="documentProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Type</span><select id="documentType"><option>Document</option><option>Tableur</option><option>PDF</option><option>Plan</option></select></label>
+      <label class="form-field form-field-full"><span>Lien Google Drive (optionnel dans la démo)</span><input id="documentUrl" type="url" placeholder="https://drive.google.com/..." /></label>
+    </div>
+    <p class="form-note">Pilotage stocke uniquement la référence et le lien. Le fichier reste dans Google Drive.</p>
+    <footer><button class="secondary-btn" id="cancelDocumentModal">Annuler</button><button class="primary-btn" id="saveDocument">Lier le document</button></footer>
   </div>`;
 }
 
@@ -469,20 +536,29 @@ function resolveNotification(id) {
 }
 
 
-function openTaskModal(projectId = null) {
+function openTaskModal(projectId = null, editId = null) {
   taskModalOpen = true;
   taskModalProjectId = projectId;
+  taskEditId = editId;
   projectModalOpen = false;
+  documentModalOpen = false;
   planningTaskId = null;
   notificationOpen = false;
-  trace(TAGS.TASK_MODAL, 'Ouverture formulaire tâche', { projectId });
+  trace(editId ? TAGS.TASK_EDITOR : TAGS.TASK_MODAL, editId ? 'Ouverture édition tâche' : 'Ouverture formulaire tâche', { projectId, taskId: editId });
   render();
   requestAnimationFrame(() => document.querySelector('#taskTitle')?.focus());
+}
+
+function openTaskEditor(taskId) {
+  const t = task(taskId);
+  if (!t) return;
+  openTaskModal(t.projectId || null, taskId);
 }
 
 function closeTaskModal() {
   taskModalOpen = false;
   taskModalProjectId = null;
+  taskEditId = null;
   render();
 }
 
@@ -496,50 +572,60 @@ function createTaskFromForm() {
   const projectId = document.querySelector('#taskProject')?.value || null;
   const assignedTo = document.querySelector('#taskOwner')?.value || state.currentUser.id;
   const priority = document.querySelector('#taskPriority')?.value || 'medium';
-  const planningChoice = document.querySelector('#taskPlanning')?.value || 'backlog';
-  const scheduledFor = planningChoice === 'today' ? '2026-09-17' : null;
-  const planningBucket = planningChoice === 'today' ? 'this_week' : planningChoice;
+  const status = document.querySelector('#taskStatus')?.value || 'todo';
+  const planningBucket = document.querySelector('#taskPlanning')?.value || 'backlog';
+  const scheduledFor = document.querySelector('#taskScheduledFor')?.value || null;
+  const dueAt = toDueIso(document.querySelector('#taskDueAt')?.value || '');
 
-  const newTask = {
-    id: crypto.randomUUID(),
-    title,
-    projectId,
-    assignedTo,
-    status: 'todo',
-    priority,
-    scheduledFor,
-    dueAt: null,
-    planningStatus: 'planned',
-    planningBucket,
-    needsPlanning: false,
-    sortOrder: Date.now(),
-    sourceType: 'manual',
-    createdAt: new Date().toISOString()
-  };
-  state.tasks.push(newTask);
-  addActivity({
-    projectId,
-    text: `Nouvelle tâche créée : ${title}`,
-    internalTag: TAGS.TASK_CREATE
-  });
-  persist(TAGS.TASK_CREATE, 'Tâche créée manuellement', { taskId: newTask.id, projectId, planningBucket, scheduledFor });
+  if (taskEditId) {
+    const existing = task(taskEditId);
+    if (!existing) return;
+    const oldOwner = existing.assignedTo;
+    const oldProject = existing.projectId;
+    const oldScheduledFor = existing.scheduledFor || null;
+    const oldDueAt = existing.dueAt || null;
+    Object.assign(existing, {
+      title, projectId, assignedTo, priority, status, planningBucket, scheduledFor, dueAt,
+      planningStatus: 'planned', needsPlanning: false, sortOrder: existing.sortOrder || Date.now(),
+      completedAt: status === 'completed' ? (existing.completedAt || new Date().toISOString()) : null,
+      updatedAt: new Date().toISOString()
+    });
+    addActivity({ projectId, text: `Tâche modifiée : ${title}`, internalTag: TAGS.TASK_EDIT });
+    if (oldOwner !== assignedTo) addActivity({ projectId, text: `${title} assignée à ${teamName(assignedTo)}`, internalTag: TAGS.TASK_ASSIGN });
+    if (oldScheduledFor !== scheduledFor || oldDueAt !== dueAt) addActivity({ projectId, text: `Planification mise à jour : ${title}`, internalTag: TAGS.TASK_SCHEDULE });
+    persist(TAGS.TASK_EDIT, 'Tâche modifiée', { taskId: existing.id, oldProject, projectId, assignedTo, planningBucket, scheduledFor, dueAt });
+  } else {
+    const newTask = {
+      id: crypto.randomUUID(), title, projectId, assignedTo, status, priority, scheduledFor, dueAt,
+      planningStatus: 'planned', planningBucket, needsPlanning: false, sortOrder: Date.now(),
+      sourceType: 'manual', createdAt: new Date().toISOString(), completedAt: status === 'completed' ? new Date().toISOString() : null
+    };
+    state.tasks.push(newTask);
+    addActivity({ projectId, text: `Nouvelle tâche créée : ${title} · ${teamName(assignedTo)}`, internalTag: TAGS.TASK_CREATE });
+    persist(TAGS.TASK_CREATE, 'Tâche créée manuellement', { taskId: newTask.id, projectId, assignedTo, planningBucket, scheduledFor, dueAt });
+  }
   taskModalOpen = false;
   taskModalProjectId = null;
+  taskEditId = null;
   render();
 }
 
-function openProjectModal() {
+function openProjectModal(editId = null) {
   projectModalOpen = true;
+  projectEditId = editId;
   taskModalOpen = false;
+  taskEditId = null;
+  documentModalOpen = false;
   planningTaskId = null;
   notificationOpen = false;
-  trace(TAGS.PROJECT_MODAL, 'Ouverture formulaire projet');
+  trace(editId ? TAGS.PROJECT_EDITOR : TAGS.PROJECT_MODAL, editId ? 'Ouverture édition projet' : 'Ouverture formulaire projet', { projectId: editId });
   render();
   requestAnimationFrame(() => document.querySelector('#projectName')?.focus());
 }
 
 function closeProjectModal() {
   projectModalOpen = false;
+  projectEditId = null;
   render();
 }
 
@@ -553,38 +639,75 @@ function createProjectFromForm() {
   const owner = document.querySelector('#projectOwner')?.value || state.currentUser.id;
   const priority = document.querySelector('#projectPriority')?.value || 'medium';
   const status = document.querySelector('#projectStatus')?.value || 'in_progress';
+  const progress = Number(document.querySelector('#projectProgress')?.value || 0);
+  const blocker = document.querySelector('#projectBlocker')?.value.trim() || '';
   const nextAction = document.querySelector('#projectNextAction')?.value.trim() || 'À définir';
-  const id = crypto.randomUUID();
 
-  const newProject = {
-    id,
-    name,
-    owner,
-    members: [...new Set([state.currentUser.id, owner])],
-    status,
-    priority,
-    progress: 0,
-    blocker: '',
-    nextAction,
-    updatedAt: new Date().toISOString()
-  };
-  state.projects.unshift(newProject);
-  addActivity({
-    projectId: id,
-    text: `Nouveau projet créé : ${name}`,
-    internalTag: TAGS.PROJECT_CREATE
-  });
-  persist(TAGS.PROJECT_CREATE, 'Projet créé manuellement', { projectId: id, owner, priority, status });
+  if (projectEditId) {
+    const existing = project(projectEditId);
+    if (!existing) return;
+    const oldOwner = existing.owner;
+    const oldProgress = Number(existing.progress || 0);
+    Object.assign(existing, { name, owner, priority, status, progress, blocker, nextAction, updatedAt:new Date().toISOString() });
+    existing.members = [...new Set([...(existing.members || []), state.currentUser.id, owner])];
+    addActivity({ projectId: existing.id, text: `Projet mis à jour · ${progress} % · ${statusLabels[status]}`, internalTag: TAGS.PROJECT_EDIT });
+    if (oldOwner !== owner) addActivity({ projectId: existing.id, text: `Responsable projet : ${teamName(owner)}`, internalTag: TAGS.PROJECT_OWNER });
+    if (oldProgress !== progress) addActivity({ projectId: existing.id, text: `Progression : ${oldProgress} % → ${progress} %`, internalTag: TAGS.PROJECT_PROGRESS });
+    persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, priority, status, progress, blocker });
+  } else {
+    const id = crypto.randomUUID();
+    const newProject = { id, name, owner, members:[...new Set([state.currentUser.id, owner])], status, priority, progress, blocker, nextAction, updatedAt:new Date().toISOString() };
+    state.projects.unshift(newProject);
+    addActivity({ projectId:id, text:`Nouveau projet créé : ${name}`, internalTag:TAGS.PROJECT_CREATE });
+    persist(TAGS.PROJECT_CREATE, 'Projet créé manuellement', { projectId:id, owner, priority, status });
+    selectedProjectId = id;
+    currentPage = 'projects';
+  }
   projectModalOpen = false;
-  selectedProjectId = id;
-  currentPage = 'projects';
+  projectEditId = null;
+  render();
+}
+
+function openDocumentModal() {
+  documentModalOpen = true;
+  taskModalOpen = false;
+  taskEditId = null;
+  projectModalOpen = false;
+  projectEditId = null;
+  planningTaskId = null;
+  notificationOpen = false;
+  trace(TAGS.DOCUMENT_MODAL, 'Ouverture liaison document Drive');
+  render();
+  requestAnimationFrame(() => document.querySelector('#documentName')?.focus());
+}
+
+function closeDocumentModal() {
+  documentModalOpen = false;
+  render();
+}
+
+function createDocumentFromForm() {
+  const nameInput = document.querySelector('#documentName');
+  const name = nameInput?.value.trim();
+  if (!name) { nameInput?.classList.add('field-error'); nameInput?.focus(); return; }
+  const projectId = document.querySelector('#documentProject')?.value || null;
+  const type = document.querySelector('#documentType')?.value || 'Document';
+  const url = document.querySelector('#documentUrl')?.value.trim() || '';
+  const id = crypto.randomUUID();
+  state.documents.push({ id, projectId, name, type, source:'Google Drive', url });
+  addActivity({ projectId, text:`Document lié : ${name}`, internalTag:TAGS.DOCUMENT_LINK });
+  persist(TAGS.DOCUMENT_LINK, 'Référence Drive ajoutée', { documentId:id, projectId, type, hasUrl:Boolean(url) });
+  documentModalOpen = false;
   render();
 }
 
 function openAiSimulation() {
   aiSimulationOpen = true;
   taskModalOpen = false;
+  taskEditId = null;
   projectModalOpen = false;
+  projectEditId = null;
+  documentModalOpen = false;
   planningTaskId = null;
   notificationOpen = false;
   trace(TAGS.AI_SIMULATION_MODAL, 'Ouverture simulation IA');
@@ -678,6 +801,16 @@ function bindEvents() {
   document.querySelectorAll('[data-project]').forEach(el => el.addEventListener('click', () => { selectedProjectId = el.dataset.project; currentPage = 'projects'; render(); }));
   document.querySelectorAll('[data-complete]').forEach(el => el.addEventListener('click', () => completeTask(el.dataset.complete)));
   document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openPlanning(el.dataset.plan); }));
+  document.querySelectorAll('[data-edit-task]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openTaskEditor(el.dataset.editTask); }));
+  document.querySelectorAll('[data-edit-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openProjectModal(el.dataset.editProject); }));
+  document.querySelectorAll('[data-team-target]').forEach(el => el.addEventListener('click', e => {
+    e.preventDefault();
+    const target = el.dataset.teamTarget;
+    const input = document.querySelector(`#${target}`);
+    if (input) input.value = el.dataset.teamValue;
+    document.querySelectorAll(`[data-team-target="${target}"]`).forEach(x => x.classList.toggle('active', x === el));
+    trace(TAGS.TEAM_PICKER, 'Sélection responsable', { target, userId:el.dataset.teamValue });
+  }));
   document.querySelectorAll('[data-resolve]').forEach(el => el.addEventListener('click', () => resolveNotification(el.dataset.resolve)));
 
   document.querySelectorAll('[data-project-filter]').forEach(el => el.addEventListener('click', () => { projectFilter = el.dataset.projectFilter; render(); }));
@@ -685,11 +818,17 @@ function bindEvents() {
   document.querySelectorAll('[data-notif-filter]').forEach(el => el.addEventListener('click', () => { notificationFilter = el.dataset.notifFilter; render(); }));
   document.querySelectorAll('[data-action="quick-add"]').forEach(el => el.addEventListener('click', () => openTaskModal()));
   document.querySelectorAll('[data-action="add-project-task"]').forEach(el => el.addEventListener('click', () => openTaskModal(el.dataset.projectId)));
-  document.querySelectorAll('[data-action="new-project"]').forEach(el => el.addEventListener('click', openProjectModal));
+  document.querySelectorAll('[data-action="new-project"]').forEach(el => el.addEventListener('click', () => openProjectModal()));
+  document.querySelectorAll('[data-action="link-document"]').forEach(el => el.addEventListener('click', openDocumentModal));
 
   document.querySelector('#planningProjectFilter')?.addEventListener('change', e => { planningFilterProject = e.target.value; render(); });
   document.querySelector('#planningOwnerFilter')?.addEventListener('change', e => { planningFilterOwner = e.target.value; render(); });
   document.querySelector('#planningPriorityFilter')?.addEventListener('change', e => { planningFilterPriority = e.target.value; render(); });
+  document.querySelectorAll('[data-mobile-bucket]').forEach(el => el.addEventListener('click', () => { mobilePlanningBucket = el.dataset.mobileBucket; trace(TAGS.MOBILE_PLAN_ACTION, 'Période Roadmap mobile', { bucket:mobilePlanningBucket }); render(); }));
+  document.querySelectorAll('[data-calendar-view]').forEach(el => el.addEventListener('click', () => { calendarView = el.dataset.calendarView; trace(TAGS.CALENDAR_VIEW, 'Vue agenda', { view:calendarView }); render(); }));
+  document.querySelector('#documentSearch')?.addEventListener('input', e => { documentSearch = e.target.value; trace(TAGS.DOCUMENT_FILTER, 'Recherche document', { query:documentSearch }); render(); requestAnimationFrame(() => { const input=document.querySelector('#documentSearch'); if(input){ input.focus(); input.setSelectionRange(input.value.length,input.value.length); } }); });
+  document.querySelector('#documentProjectFilter')?.addEventListener('change', e => { documentProjectFilter = e.target.value; trace(TAGS.DOCUMENT_FILTER, 'Filtre document projet', { projectId:documentProjectFilter }); render(); });
+  document.querySelectorAll('[data-open-doc]').forEach(el => el.addEventListener('click', () => { const d=state.documents.find(x=>x.id===el.dataset.openDoc); if(d?.url) window.open(d.url, '_blank', 'noopener'); }));
 
   document.querySelector('#notificationBtn')?.addEventListener('click', () => { notificationOpen = !notificationOpen; trace(TAGS.NOTIFICATION_DRAWER, 'Drawer notifications', { open: notificationOpen }); render(); });
   document.querySelector('#openNotifFromToday')?.addEventListener('click', () => { notificationOpen = true; render(); });
@@ -703,10 +842,20 @@ function bindEvents() {
   document.querySelector('#confirmPlan')?.addEventListener('click', e => {
     const selected = document.querySelector('input[name="planBucket"]:checked')?.value || 'backlog';
     const id = e.currentTarget.dataset.task;
+    const t = task(id);
+    if (!t) return;
+    const previousOwner = t.assignedTo;
+    const assignedTo = document.querySelector('#planOwner')?.value || t.assignedTo;
+    const scheduledFor = document.querySelector('#planScheduledFor')?.value || null;
+    const dueAt = toDueIso(document.querySelector('#planDueAt')?.value || '');
     moveTask(id, selected);
+    t.assignedTo = assignedTo;
+    t.scheduledFor = scheduledFor;
+    t.dueAt = dueAt;
+    if (previousOwner !== assignedTo) addActivity({ projectId:t.projectId, text:`${t.title} assignée à ${teamName(assignedTo)}`, internalTag:TAGS.TASK_ASSIGN });
     state.notifications.filter(n => n.taskId === id).forEach(n => { n.read = true; n.resolved = true; });
     planningTaskId = null;
-    persist(TAGS.PLAN_CONFIRM, 'Planification confirmée', { taskId: id, bucket: selected });
+    persist(TAGS.PLAN_CONFIRM, 'Planification confirmée', { taskId:id, bucket:selected, assignedTo, scheduledFor, dueAt });
     render();
   });
 
@@ -721,6 +870,12 @@ function bindEvents() {
   document.querySelector('#projectModalBackdrop')?.addEventListener('click', closeProjectModal);
   document.querySelector('#saveProject')?.addEventListener('click', createProjectFromForm);
   document.querySelector('#projectName')?.addEventListener('keydown', e => { if (e.key === 'Enter') createProjectFromForm(); });
+  document.querySelector('#projectProgress')?.addEventListener('input', e => { const out=document.querySelector('#projectProgressValue'); if(out) out.textContent=`${e.target.value} %`; });
+
+  document.querySelector('#closeDocumentModal')?.addEventListener('click', closeDocumentModal);
+  document.querySelector('#cancelDocumentModal')?.addEventListener('click', closeDocumentModal);
+  document.querySelector('#documentModalBackdrop')?.addEventListener('click', closeDocumentModal);
+  document.querySelector('#saveDocument')?.addEventListener('click', createDocumentFromForm);
 
   document.querySelector('#resetDemo')?.addEventListener('click', () => {
     state = resetState();
@@ -738,6 +893,13 @@ function bindEvents() {
     activityFilter = 'all';
     notificationFilter = 'all';
     aiSimulationOpen = false;
+    taskEditId = null;
+    projectEditId = null;
+    calendarView = 'today';
+    documentSearch = '';
+    documentProjectFilter = 'all';
+    documentModalOpen = false;
+    mobilePlanningBucket = 'this_month';
     render();
   });
 
@@ -777,7 +939,7 @@ function updateSearch(query) {
   if (!q) { target.innerHTML = '<p class="search-hint">Projet, tâche, document ou activité.</p>'; return; }
   const results = [
     ...state.projects.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Projet', title:x.name, action:`project:${x.id}` })),
-    ...state.tasks.filter(x => x.title.toLowerCase().includes(q)).map(x => ({ type:'Tâche', title:x.title, action:`planning:${x.id}` })),
+    ...state.tasks.filter(x => x.title.toLowerCase().includes(q)).map(x => ({ type:'Tâche', title:x.title, action:`task:${x.id}` })),
     ...state.documents.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Document', title:x.name, action:'documents' }))
   ].slice(0,8);
   target.innerHTML = results.length ? results.map(r => `<button class="search-result" data-search-action="${r.action}"><small>${r.type}</small><strong>${esc(r.title)}</strong></button>`).join('') : '<p class="search-hint">Aucun résultat.</p>';
@@ -785,7 +947,7 @@ function updateSearch(query) {
     const action = btn.dataset.searchAction;
     closeSearch();
     if (action.startsWith('project:')) { selectedProjectId = action.split(':')[1]; currentPage = 'projects'; render(); }
-    else if (action.startsWith('planning:')) { currentPage = 'planning'; render(); }
+    else if (action.startsWith('task:')) { openTaskEditor(action.split(':')[1]); }
     else navigate(action);
   }));
 }
