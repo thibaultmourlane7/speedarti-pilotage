@@ -126,29 +126,6 @@ const initialState = {
   ]
 };
 
-// Référentiel minimal utilisé par la démo. Les balises ne sont jamais rendues dans l'interface.
-const TAGS = Object.freeze({
-  NAVIGATE: 'PILOT-UI-001',
-  MOBILE_NAV: 'PILOT-UI-002',
-  NOTIFICATION_DRAWER: 'PILOT-UI-004',
-  PLANNING_MODAL: 'PILOT-UI-005',
-  SEARCH: 'PILOT-UI-006',
-  TASK_COMPLETE: 'PILOT-TASK-007',
-  PLAN_DETECT: 'PILOT-PLAN-001',
-  PLAN_UNPLANNED: 'PILOT-PLAN-002',
-  PLAN_MODAL: 'PILOT-PLAN-003',
-  PLAN_CONFIRM: 'PILOT-PLAN-004',
-  PLAN_MOVE: 'PILOT-PLAN-005',
-  ACTIVITY_LOG: 'PILOT-ACT-001',
-  NOTIF_READ: 'PILOT-NOTIF-002',
-  NOTIF_RESOLVE: 'PILOT-NOTIF-009'
-});
-
-function trace(tag, message, details = {}) {
-  // Invisible pour l'utilisateur. Disponible dans la console pour le diagnostic.
-  console.debug(`[${tag}] ${message}`, details);
-}
-
 
 // PILOT-DEMO-002 — Persistance locale de démo. Remplacée plus tard par Supabase.
 const STORAGE_KEY = 'speedarti-pilotage-demo-v1';
@@ -176,11 +153,53 @@ function resetState() {
 }
 
 
+// Référentiel minimal utilisé par la démo. Les balises ne sont jamais rendues dans l'interface.
+const TAGS = Object.freeze({
+  NAVIGATE: 'PILOT-UI-001',
+  MOBILE_NAV: 'PILOT-UI-002',
+  NOTIFICATION_DRAWER: 'PILOT-UI-004',
+  PLANNING_MODAL: 'PILOT-UI-005',
+  SEARCH: 'PILOT-UI-006',
+  COLOR_SYSTEM: 'PILOT-UI-010',
+  TASK_CREATE: 'PILOT-TASK-001',
+  TASK_COMPLETE: 'PILOT-TASK-007',
+  PLAN_DETECT: 'PILOT-PLAN-001',
+  PLAN_UNPLANNED: 'PILOT-PLAN-002',
+  PLAN_MODAL: 'PILOT-PLAN-003',
+  PLAN_CONFIRM: 'PILOT-PLAN-004',
+  PLAN_MOVE: 'PILOT-PLAN-005',
+  PROJECT_CREATE: 'PILOT-PROJ-001',
+  TASK_MODAL: 'PILOT-UI-011',
+  PROJECT_MODAL: 'PILOT-UI-012',
+  PROJECT_FILTER: 'PILOT-UI-013',
+  PLANNING_FILTER: 'PILOT-UI-014',
+  ACTIVITY_FILTER: 'PILOT-UI-015',
+  NOTIFICATION_FILTER: 'PILOT-UI-016',
+  ACTIVITY_LOG: 'PILOT-ACT-001',
+  NOTIF_READ: 'PILOT-NOTIF-002',
+  NOTIF_RESOLVE: 'PILOT-NOTIF-009'
+});
+
+function trace(tag, message, details = {}) {
+  // Invisible pour l'utilisateur. Disponible dans la console pour le diagnostic.
+  console.debug(`[${tag}] ${message}`, details);
+}
+
+
 let state = loadState();
 let currentPage = 'today';
 let selectedProjectId = null;
 let notificationOpen = false;
 let planningTaskId = null;
+let taskModalOpen = false;
+let taskModalProjectId = null;
+let projectModalOpen = false;
+let projectFilter = 'all';
+let planningFilterProject = 'all';
+let planningFilterOwner = 'all';
+let planningFilterPriority = 'all';
+let activityFilter = 'all';
+let notificationFilter = 'all';
 
 const app = document.querySelector('#app');
 
@@ -257,6 +276,8 @@ function layout(content) {
 
       ${notificationOpen ? renderNotifications() : ''}
       ${planningTaskId ? renderPlanningModal(planningTaskId) : ''}
+      ${taskModalOpen ? renderTaskModal() : ''}
+      ${projectModalOpen ? renderProjectModal() : ''}
     </div>
   `;
 }
@@ -280,7 +301,7 @@ function renderToday() {
     <section class="section">
       <div class="section-title"><h2>Agenda du jour</h2><button class="text-button" data-page="calendar">Voir l’agenda →</button></div>
       <div class="simple-list">
-        ${events.map(e => `<div class="time-row"><time>${formatTime(e.at)}</time><div><strong>${esc(e.title)}</strong><small>Google Calendar</small></div></div>`).join('') || `<div class="empty-line">Aucun rendez-vous aujourd’hui.</div>`}
+        ${events.map(e => `<div class="time-row source-google"><time>${formatTime(e.at)}</time><div><strong>${esc(e.title)}</strong><small>Google Calendar</small></div></div>`).join('') || `<div class="empty-line">Aucun rendez-vous aujourd’hui.</div>`}
       </div>
     </section>
 
@@ -317,39 +338,70 @@ function renderToday() {
 
 function renderPlanning() {
   const buckets = ['backlog','this_week','this_month','next_3_months','later'];
-  return pageHeader('Planification', 'Organiser le court, moyen et long terme') + `
-    <div class="toolbar"><select><option>Tous les projets</option></select><select><option>Tous les responsables</option></select><select><option>Toutes les priorités</option></select></div>
+  const filteredTasks = state.tasks.filter(t => {
+    if (t.status === 'completed') return false;
+    if (planningFilterProject !== 'all' && t.projectId !== planningFilterProject) return false;
+    if (planningFilterOwner !== 'all' && t.assignedTo !== planningFilterOwner) return false;
+    if (planningFilterPriority !== 'all' && t.priority !== planningFilterPriority) return false;
+    return true;
+  });
+
+  return pageHeader('Planification', 'Organiser le court, moyen et long terme', '<button class="primary-btn" data-action="quick-add">+ Ajouter une tâche</button>') + `
+    <div class="toolbar">
+      <select id="planningProjectFilter">
+        <option value="all">Tous les projets</option>
+        ${state.projects.map(p => `<option value="${p.id}" ${planningFilterProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+      </select>
+      <select id="planningOwnerFilter">
+        <option value="all">Tous les responsables</option>
+        ${state.team.map(m => `<option value="${m.id}" ${planningFilterOwner === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
+      </select>
+      <select id="planningPriorityFilter">
+        <option value="all">Toutes les priorités</option>
+        ${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${planningFilterPriority === value ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </div>
     <div class="planning-board">
       ${buckets.map(bucket => {
-        const items = state.tasks.filter(t => t.planningBucket === bucket && t.status !== 'completed').sort((a,b) => a.sortOrder - b.sortOrder);
+        const items = filteredTasks.filter(t => t.planningBucket === bucket).sort((a,b) => a.sortOrder - b.sortOrder);
         return `<section class="planning-column" data-bucket="${bucket}">
           <header><h2>${planningLabels[bucket]}</h2><span>${items.length}</span></header>
           <div class="planning-dropzone" data-dropzone="${bucket}">
             ${items.map(t => `<article class="planning-card ${t.needsPlanning && t.planningStatus === 'unplanned' ? 'needs-planning' : ''}" draggable="true" data-task="${t.id}">
               <strong>${esc(t.title)}</strong>
-              <small>${esc(project(t.projectId)?.name || 'À rattacher')}</small>
+              <small>${esc(project(t.projectId)?.name || 'Sans projet')}</small>
               <footer><span>${esc(teamName(t.assignedTo))}</span>${priorityBadge(t.priority)}</footer>
               ${t.needsPlanning && t.planningStatus === 'unplanned' ? `<button class="mini-action" data-plan="${t.id}">Positionner</button>` : ''}
-            </article>`).join('')}
+            </article>`).join('') || `<div class="planning-empty">Aucune tâche</div>`}
           </div>
         </section>`;
       }).join('')}
     </div>`;
 }
-
 function renderProjects() {
   if (selectedProjectId) return renderProjectDetail(selectedProjectId);
+
+  const filters = [
+    ['all', 'Tous'],
+    ['in_progress', 'En cours'],
+    ['blocked', 'Bloqués'],
+    ['to_test', 'À tester'],
+    ['completed', 'Terminés']
+  ];
+  const visibleProjects = state.projects.filter(p => projectFilter === 'all' || p.status === projectFilter);
+
   return pageHeader('Projets', 'Vue simple de l’état des projets', '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>') + `
-    <div class="tabs"><button class="active">Tous</button><button>En cours</button><button>Bloqués</button><button>À tester</button><button>Terminés</button></div>
+    <div class="tabs">
+      ${filters.map(([value,label]) => `<button class="${projectFilter === value ? 'active' : ''}" data-project-filter="${value}">${label}</button>`).join('')}
+    </div>
     <div class="project-list">
-      ${state.projects.map(p => `<button class="project-row" data-project="${p.id}">
+      ${visibleProjects.map(p => `<button class="project-row" data-project="${p.id}">
         <div class="project-main"><div class="project-title-line"><strong>${esc(p.name)}</strong>${statusBadge(p.status)}${priorityBadge(p.priority)}</div><small>${esc(teamName(p.owner))}</small></div>
         <div class="project-progress"><span>${p.progress} %</span><div class="progress"><i style="width:${p.progress}%"></i></div></div>
-        <div class="project-context"><small>${p.blocker ? 'Blocage' : 'Prochaine action'}</small><span>${esc(p.blocker || p.nextAction)}</span></div>
-      </button>`).join('')}
+        <div class="project-context"><small>${p.blocker ? 'Blocage' : 'Prochaine action'}</small><span>${esc(p.blocker || p.nextAction || 'À définir')}</span></div>
+      </button>`).join('') || `<div class="empty-state">Aucun projet dans cette vue.</div>`}
     </div>`;
 }
-
 function renderProjectDetail(id) {
   const p = project(id);
   if (!p) { selectedProjectId = null; return renderProjects(); }
@@ -365,8 +417,8 @@ function renderProjectDetail(id) {
       <div><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong></div>
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
     </section>
-    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><div class="task-main"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]}</small></div>${priorityBadge(t.priority)}</div>`).join('')}</div></section>
-    <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div><button class="text-button">Ouvrir →</button></div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
+    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><div class="task-main"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]}</small></div>${priorityBadge(t.priority)}</div>`).join('')}</div></section>
+    <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div><button class="text-button">Ouvrir →</button></div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
 }
 
@@ -374,7 +426,7 @@ function renderCalendar() {
   const events = [...state.calendarEvents.map(e => ({...e, kind:'calendar'})), ...state.tasks.filter(t => t.dueAt).map(t => ({ id:t.id, at:t.dueAt, title:t.title, source:'SpeedArti', kind:'task' }))].sort((a,b) => new Date(a.at)-new Date(b.at));
   return pageHeader('Agenda', 'Rendez-vous et échéances au même endroit') + `
     <div class="tabs"><button class="active">Aujourd’hui</button><button>Semaine</button><button>Mois</button></div>
-    <section class="section"><div class="date-heading">Jeudi 17 septembre</div><div class="agenda-list">${events.map(e => `<div class="agenda-row"><time>${formatTime(e.at)}</time><div><strong>${esc(e.title)}</strong><small>${e.source === 'google' ? 'Google Calendar' : 'SpeedArti'}</small></div></div>`).join('')}</div></section>`;
+    <section class="section"><div class="date-heading">Jeudi 17 septembre</div><div class="agenda-list">${events.map(e => `<div class="agenda-row ${e.source === 'google' ? 'source-google' : 'source-speedarti'}"><time>${formatTime(e.at)}</time><div><strong>${esc(e.title)}</strong><small>${e.source === 'google' ? 'Google Calendar' : 'SpeedArti'}</small></div></div>`).join('')}</div></section>`;
 }
 
 function renderDocuments() {
@@ -383,7 +435,7 @@ function renderDocuments() {
     <div class="documents-list">${state.projects.map(p => {
       const docs = state.documents.filter(d => d.projectId === p.id);
       if (!docs.length) return '';
-      return `<section class="section doc-group"><h2>${esc(p.name)}</h2>${docs.map(d => `<div class="doc-row"><span class="doc-icon">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type)} · ${esc(d.source)}</small></div><button class="text-button">Ouvrir →</button></div>`).join('')}</section>`;
+      return `<section class="section doc-group"><h2>${esc(p.name)}</h2>${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type)} · ${esc(d.source)}</small></div><button class="text-button">Ouvrir →</button></div>`).join('')}</section>`;
     }).join('')}</div>`;
 }
 
@@ -393,26 +445,51 @@ function renderActivityItem(a) {
 }
 
 function renderActivity() {
+  const filters = [
+    ['all','Tous'],
+    ['thibault','Thibault'],
+    ['anne','Anne-Sophie'],
+    ['guillaume','Guillaume'],
+    ['ai','IA']
+  ];
+  const visible = state.activity.filter(a => {
+    const actor = a.actor.toLowerCase();
+    if (activityFilter === 'all') return true;
+    if (activityFilter === 'thibault') return actor.includes('thibault');
+    if (activityFilter === 'anne') return actor.includes('anne-sophie');
+    if (activityFilter === 'guillaume') return actor.includes('guillaume');
+    if (activityFilter === 'ai') return actor.includes('via') || actor.includes('chatgpt') || actor.includes('claude');
+    return true;
+  });
   return pageHeader('Activité', 'Ce qui a réellement changé') + `
-    <div class="tabs"><button class="active">Tous</button><button>Thibault</button><button>Anne-Sophie</button><button>Guillaume</button><button>IA</button></div>
-    <section class="section"><div class="activity-list">${state.activity.map(renderActivityItem).join('')}</div></section>`;
+    <div class="tabs">
+      ${filters.map(([value,label]) => `<button class="${activityFilter === value ? 'active' : ''}" data-activity-filter="${value}">${label}</button>`).join('')}
+    </div>
+    <section class="section"><div class="activity-list">${visible.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité dans ce filtre.</div>'}</div></section>`;
 }
-
 function renderMore() {
   return pageHeader('Plus') + `<div class="menu-list"><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
 }
 
 function renderNotifications() {
-  const active = state.notifications.filter(n => !n.resolved);
+  const active = state.notifications.filter(n => !n.resolved).filter(n => {
+    if (notificationFilter === 'all') return true;
+    if (notificationFilter === 'action') return n.severity === 'action';
+    if (notificationFilter === 'error') return n.severity === 'error';
+    return true;
+  });
   return `<div class="drawer-backdrop" id="drawerBackdrop"></div><aside class="notification-drawer">
-    <header><div><h2>Notifications</h2><small>${active.length} à consulter</small></div><button class="icon-btn" id="closeNotif">×</button></header>
-    <div class="drawer-tabs"><button class="active">Toutes</button><button>À traiter</button><button>Erreurs</button></div>
+    <header><div><h2>Notifications</h2><small>${state.notifications.filter(n => !n.resolved).length} à consulter</small></div><button class="icon-btn" id="closeNotif">×</button></header>
+    <div class="drawer-tabs">
+      <button class="${notificationFilter === 'all' ? 'active' : ''}" data-notif-filter="all">Toutes</button>
+      <button class="${notificationFilter === 'action' ? 'active' : ''}" data-notif-filter="action">À traiter</button>
+      <button class="${notificationFilter === 'error' ? 'active' : ''}" data-notif-filter="error">Erreurs</button>
+    </div>
     <div class="notification-list">
-      ${active.map(n => `<article class="notification-item severity-${n.severity}" data-notif="${n.id}"><span class="notif-dot"></span><div><strong>${esc(n.title)}</strong><p>${esc(n.message)}</p><div class="notif-actions">${n.actionType === 'plan' ? `<button class="text-button" data-plan="${n.taskId}">Planifier →</button>` : n.actionType === 'retry' ? `<button class="text-button" data-resolve="${n.id}">Réessayer →</button>` : `<button class="text-button" data-resolve="${n.id}">Examiner →</button>`}</div></div></article>`).join('') || '<div class="empty-state">Tout est à jour.</div>'}
+      ${active.map(n => `<article class="notification-item severity-${n.severity}" data-notif="${n.id}"><span class="notif-dot"></span><div><strong>${esc(n.title)}</strong><p>${esc(n.message)}</p><div class="notif-actions">${n.actionType === 'plan' ? `<button class="text-button" data-plan="${n.taskId}">Planifier →</button>` : n.actionType === 'retry' ? `<button class="text-button" data-resolve="${n.id}">Réessayer →</button>` : `<button class="text-button" data-resolve="${n.id}">Examiner →</button>`}</div></div></article>`).join('') || '<div class="empty-state">Aucune notification dans ce filtre.</div>'}
     </div>
   </aside>`;
 }
-
 function renderPlanningModal(taskId) {
   const t = task(taskId);
   if (!t) return '';
@@ -425,6 +502,49 @@ function renderPlanningModal(taskId) {
     </fieldset>
     ${t.suggestedBucket ? `<p class="ai-suggestion">Suggestion IA : <strong>${planningLabels[t.suggestedBucket]}</strong></p>` : ''}
     <footer><button class="secondary-btn" id="cancelPlan">Annuler</button><button class="primary-btn" id="confirmPlan" data-task="${t.id}">Ajouter</button></footer>
+  </div>`;
+}
+
+
+function renderTaskModal() {
+  const defaultProject = taskModalProjectId || '';
+  return `<div class="modal-backdrop" id="taskModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
+    <header><div><small>NOUVELLE TÂCHE</small><h2>Ajouter une tâche</h2></div><button class="icon-btn" id="closeTaskModal">×</button></header>
+    <div class="form-grid">
+      <label class="form-field form-field-full"><span>Titre</span><input id="taskTitle" type="text" placeholder="Ex. Tester la nouvelle intégration" maxlength="120" /></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="taskProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${defaultProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Responsable</span><select id="taskOwner">${state.team.map(m => `<option value="${m.id}" ${m.id === state.currentUser.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Priorité</span><select id="taskPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Planification</span><select id="taskPlanning">
+        <option value="today">Aujourd’hui</option>
+        <option value="this_week">Cette semaine</option>
+        <option value="this_month">Ce mois</option>
+        <option value="next_3_months">1 à 3 mois</option>
+        <option value="later">Plus tard</option>
+        <option value="backlog">À organiser</option>
+      </select></label>
+    </div>
+    <footer><button class="secondary-btn" id="cancelTaskModal">Annuler</button><button class="primary-btn" id="saveTask">Ajouter la tâche</button></footer>
+  </div>`;
+}
+
+function renderProjectModal() {
+  return `<div class="modal-backdrop" id="projectModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
+    <header><div><small>NOUVEAU PROJET</small><h2>Créer un projet</h2></div><button class="icon-btn" id="closeProjectModal">×</button></header>
+    <div class="form-grid">
+      <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
+      <label class="form-field"><span>Responsable</span><select id="projectOwner">${state.team.map(m => `<option value="${m.id}" ${m.id === state.currentUser.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field"><span>État</span><select id="projectStatus">
+        <option value="todo">À faire</option>
+        <option value="in_progress" selected>En cours</option>
+        <option value="to_validate">À valider</option>
+        <option value="to_test">À tester</option>
+        <option value="paused">En pause</option>
+      </select></label>
+      <label class="form-field form-field-full"><span>Prochaine action</span><input id="projectNextAction" type="text" placeholder="Ex. Définir le cahier fonctionnel" maxlength="160" /></label>
+    </div>
+    <footer><button class="secondary-btn" id="cancelProjectModal">Annuler</button><button class="primary-btn" id="saveProject">Créer le projet</button></footer>
   </div>`;
 }
 
@@ -493,6 +613,119 @@ function resolveNotification(id) {
   render();
 }
 
+
+function openTaskModal(projectId = null) {
+  taskModalOpen = true;
+  taskModalProjectId = projectId;
+  projectModalOpen = false;
+  planningTaskId = null;
+  notificationOpen = false;
+  trace(TAGS.TASK_MODAL, 'Ouverture formulaire tâche', { projectId });
+  render();
+  requestAnimationFrame(() => document.querySelector('#taskTitle')?.focus());
+}
+
+function closeTaskModal() {
+  taskModalOpen = false;
+  taskModalProjectId = null;
+  render();
+}
+
+function createTaskFromForm() {
+  const title = document.querySelector('#taskTitle')?.value.trim();
+  if (!title) {
+    document.querySelector('#taskTitle')?.classList.add('field-error');
+    document.querySelector('#taskTitle')?.focus();
+    return;
+  }
+  const projectId = document.querySelector('#taskProject')?.value || null;
+  const assignedTo = document.querySelector('#taskOwner')?.value || state.currentUser.id;
+  const priority = document.querySelector('#taskPriority')?.value || 'medium';
+  const planningChoice = document.querySelector('#taskPlanning')?.value || 'backlog';
+  const scheduledFor = planningChoice === 'today' ? '2026-09-17' : null;
+  const planningBucket = planningChoice === 'today' ? 'this_week' : planningChoice;
+
+  const newTask = {
+    id: crypto.randomUUID(),
+    title,
+    projectId,
+    assignedTo,
+    status: 'todo',
+    priority,
+    scheduledFor,
+    dueAt: null,
+    planningStatus: 'planned',
+    planningBucket,
+    needsPlanning: false,
+    sortOrder: Date.now(),
+    sourceType: 'manual',
+    createdAt: new Date().toISOString()
+  };
+  state.tasks.push(newTask);
+  addActivity({
+    projectId,
+    text: `Nouvelle tâche créée : ${title}`,
+    internalTag: TAGS.TASK_CREATE
+  });
+  persist(TAGS.TASK_CREATE, 'Tâche créée manuellement', { taskId: newTask.id, projectId, planningBucket, scheduledFor });
+  taskModalOpen = false;
+  taskModalProjectId = null;
+  render();
+}
+
+function openProjectModal() {
+  projectModalOpen = true;
+  taskModalOpen = false;
+  planningTaskId = null;
+  notificationOpen = false;
+  trace(TAGS.PROJECT_MODAL, 'Ouverture formulaire projet');
+  render();
+  requestAnimationFrame(() => document.querySelector('#projectName')?.focus());
+}
+
+function closeProjectModal() {
+  projectModalOpen = false;
+  render();
+}
+
+function createProjectFromForm() {
+  const name = document.querySelector('#projectName')?.value.trim();
+  if (!name) {
+    document.querySelector('#projectName')?.classList.add('field-error');
+    document.querySelector('#projectName')?.focus();
+    return;
+  }
+  const owner = document.querySelector('#projectOwner')?.value || state.currentUser.id;
+  const priority = document.querySelector('#projectPriority')?.value || 'medium';
+  const status = document.querySelector('#projectStatus')?.value || 'in_progress';
+  const nextAction = document.querySelector('#projectNextAction')?.value.trim() || 'À définir';
+  const id = crypto.randomUUID();
+
+  const newProject = {
+    id,
+    name,
+    owner,
+    members: [...new Set([state.currentUser.id, owner])],
+    status,
+    priority,
+    progress: 0,
+    blocker: '',
+    nextAction,
+    updatedAt: new Date().toISOString()
+  };
+  state.projects.unshift(newProject);
+  addActivity({
+    projectId: id,
+    text: `Nouveau projet créé : ${name}`,
+    internalTag: TAGS.PROJECT_CREATE
+  });
+  persist(TAGS.PROJECT_CREATE, 'Projet créé manuellement', { projectId: id, owner, priority, status });
+  projectModalOpen = false;
+  selectedProjectId = id;
+  currentPage = 'projects';
+  render();
+}
+
 function bindEvents() {
   document.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.page)));
   document.querySelectorAll('[data-mobile-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.mobilePage)));
@@ -500,6 +733,17 @@ function bindEvents() {
   document.querySelectorAll('[data-complete]').forEach(el => el.addEventListener('click', () => completeTask(el.dataset.complete)));
   document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openPlanning(el.dataset.plan); }));
   document.querySelectorAll('[data-resolve]').forEach(el => el.addEventListener('click', () => resolveNotification(el.dataset.resolve)));
+
+  document.querySelectorAll('[data-project-filter]').forEach(el => el.addEventListener('click', () => { projectFilter = el.dataset.projectFilter; render(); }));
+  document.querySelectorAll('[data-activity-filter]').forEach(el => el.addEventListener('click', () => { activityFilter = el.dataset.activityFilter; render(); }));
+  document.querySelectorAll('[data-notif-filter]').forEach(el => el.addEventListener('click', () => { notificationFilter = el.dataset.notifFilter; render(); }));
+  document.querySelectorAll('[data-action="quick-add"]').forEach(el => el.addEventListener('click', () => openTaskModal()));
+  document.querySelectorAll('[data-action="add-project-task"]').forEach(el => el.addEventListener('click', () => openTaskModal(el.dataset.projectId)));
+  document.querySelectorAll('[data-action="new-project"]').forEach(el => el.addEventListener('click', openProjectModal));
+
+  document.querySelector('#planningProjectFilter')?.addEventListener('change', e => { planningFilterProject = e.target.value; render(); });
+  document.querySelector('#planningOwnerFilter')?.addEventListener('change', e => { planningFilterOwner = e.target.value; render(); });
+  document.querySelector('#planningPriorityFilter')?.addEventListener('change', e => { planningFilterPriority = e.target.value; render(); });
 
   document.querySelector('#notificationBtn')?.addEventListener('click', () => { notificationOpen = !notificationOpen; trace(TAGS.NOTIFICATION_DRAWER, 'Drawer notifications', { open: notificationOpen }); render(); });
   document.querySelector('#openNotifFromToday')?.addEventListener('click', () => { notificationOpen = true; render(); });
@@ -520,7 +764,35 @@ function bindEvents() {
     render();
   });
 
-  document.querySelector('#resetDemo')?.addEventListener('click', () => { state = resetState(); currentPage = 'today'; selectedProjectId = null; notificationOpen = false; planningTaskId = null; render(); });
+  document.querySelector('#closeTaskModal')?.addEventListener('click', closeTaskModal);
+  document.querySelector('#cancelTaskModal')?.addEventListener('click', closeTaskModal);
+  document.querySelector('#taskModalBackdrop')?.addEventListener('click', closeTaskModal);
+  document.querySelector('#saveTask')?.addEventListener('click', createTaskFromForm);
+  document.querySelector('#taskTitle')?.addEventListener('keydown', e => { if (e.key === 'Enter') createTaskFromForm(); });
+
+  document.querySelector('#closeProjectModal')?.addEventListener('click', closeProjectModal);
+  document.querySelector('#cancelProjectModal')?.addEventListener('click', closeProjectModal);
+  document.querySelector('#projectModalBackdrop')?.addEventListener('click', closeProjectModal);
+  document.querySelector('#saveProject')?.addEventListener('click', createProjectFromForm);
+  document.querySelector('#projectName')?.addEventListener('keydown', e => { if (e.key === 'Enter') createProjectFromForm(); });
+
+  document.querySelector('#resetDemo')?.addEventListener('click', () => {
+    state = resetState();
+    currentPage = 'today';
+    selectedProjectId = null;
+    notificationOpen = false;
+    planningTaskId = null;
+    taskModalOpen = false;
+    taskModalProjectId = null;
+    projectModalOpen = false;
+    projectFilter = 'all';
+    planningFilterProject = 'all';
+    planningFilterOwner = 'all';
+    planningFilterPriority = 'all';
+    activityFilter = 'all';
+    notificationFilter = 'all';
+    render();
+  });
 
   document.querySelector('#searchBtn')?.addEventListener('click', () => {
     document.body.insertAdjacentHTML('beforeend', renderSearchOverlay());
