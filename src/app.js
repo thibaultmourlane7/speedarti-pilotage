@@ -27,6 +27,9 @@ let approvalRequestId = null;
 let quickActionOpen = false;
 let activityProjectFilter = 'all';
 let activitySearch = '';
+let archiveModalProjectId = null;
+let deferTaskId = null;
+let teamWorkloadOpen = false;
 
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
@@ -90,6 +93,7 @@ function ensureRuntimeState() {
   if (!Array.isArray(state.changeRequests)) state.changeRequests = [];
   if (!Array.isArray(state.notifications)) state.notifications = [];
   if (!Array.isArray(state.aiRequests)) state.aiRequests = [];
+  state.projects.forEach(p => { if (typeof p.archived !== 'boolean') p.archived = false; });
   state.notifications = state.notifications.filter(n => !(n.type === 'approval_required' && !n.changeRequestId && !n.projectId));
   state.notifications.forEach(n => {
     if (typeof n.read !== 'boolean') n.read = Boolean(n.readAt);
@@ -145,13 +149,13 @@ function refreshSmartNotifications() {
       if (!stillActive) { n.resolved = true; n.resolvedAt = new Date().toISOString(); changed = true; trace(TAGS.NOTIF_RESOLVE, 'Alerte blocage résolue automatiquement', { notificationId:n.id, projectId:n.projectId }); }
     }
   });
-  state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW).forEach(t => {
+  state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW && (!t.projectId || !project(t.projectId)?.archived)).forEach(t => {
     const key = `deadline:${t.id}`;
     const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
     upsertNotification({ severity:'warning', type:'deadline', title:'Échéance dépassée', message:`${t.title} · échéance ${formatDate(t.dueAt)}`, actionType:'edit_task', taskId:t.id, projectId:t.projectId, groupKey:key, internalTag:TAGS.NOTIF_DEADLINE });
     if (!before) { changed = true; trace(TAGS.SMART_ALERTS, 'Alerte échéance générée', { taskId:t.id }); }
   });
-  state.projects.filter(p => p.blocker && p.status !== 'completed').forEach(p => {
+  state.projects.filter(p => p.blocker && p.status !== 'completed' && !p.archived).forEach(p => {
     const key = `blocker:${p.id}`;
     const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
     upsertNotification({ severity:'warning', type:'blocker', title:'Blocage projet', message:`${p.name} · ${p.blocker}`, actionType:'open_project', projectId:p.id, groupKey:key, internalTag:TAGS.NOTIF_BLOCKER });
@@ -233,6 +237,9 @@ function layout(content) {
       ${documentModalOpen ? renderDocumentModal() : ''}
       ${approvalRequestId ? renderApprovalModal(approvalRequestId) : ''}
       ${quickActionOpen ? renderQuickActionModal() : ''}
+      ${archiveModalProjectId ? renderArchiveModal(archiveModalProjectId) : ''}
+      ${deferTaskId ? renderDeferModal(deferTaskId) : ''}
+      ${teamWorkloadOpen ? renderTeamWorkloadModal() : ''}
     </div>
   `;
 }
@@ -259,19 +266,19 @@ function taskCompletionSummary(projectId) {
 
 function pendingApprovals() {
   ensureRuntimeState();
-  return state.changeRequests.filter(r => r.status === 'pending');
+  return state.changeRequests.filter(r => r.status === 'pending' && !project(r.projectId)?.archived);
 }
 
 function renderToday() {
   const today = '2026-09-17'; // date fixe de la démo pour rester cohérente avec les données mockées
-  const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.id && t.scheduledFor === today && t.status !== 'completed');
-  const blocked = state.projects.filter(p => p.status === 'blocked' || p.blocker).slice(0, 3);
+  const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.id && t.scheduledFor === today && t.status !== 'completed' && (!t.projectId || !project(t.projectId)?.archived));
+  const blocked = state.projects.filter(p => !p.archived && (p.status === 'blocked' || p.blocker)).slice(0, 3);
   const toPlan = state.tasks.filter(t => t.needsPlanning && t.planningStatus === 'unplanned').length;
   const approvals = state.notifications.filter(n => !n.resolved && n.type === 'approval_required').length;
   const events = state.calendarEvents.filter(e => e.at.startsWith(today));
 
-  const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW).length;
-  const activeBlockers = state.projects.filter(p => p.blocker && p.status !== 'completed').length;
+  const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW && (!t.projectId || !project(t.projectId)?.archived)).length;
+  const activeBlockers = state.projects.filter(p => !p.archived && p.blocker && p.status !== 'completed').length;
   return pageHeader('Bonjour Thibault', 'Jeudi 17 septembre') + `
     <section class="pilot-pulse">
       <button class="pulse-card pulse-red" data-notif-open-filter="warning"><span>Retards</span><strong>${overdue}</strong><small>échéance${overdue > 1 ? 's' : ''} dépassée${overdue > 1 ? 's' : ''}</small></button>
@@ -289,7 +296,7 @@ function renderToday() {
     <section class="section">
       <div class="section-title"><h2>Mes tâches</h2><button class="text-button" data-action="quick-add">+ Ajouter</button></div>
       <div class="task-list">
-        ${myTasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}" aria-label="Terminer"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${esc(project(t.projectId)?.name || 'Sans projet')} · ${esc(teamName(t.assignedTo))}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || `<div class="empty-line">Aucune tâche prévue aujourd’hui.</div>`}
+        ${myTasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}" aria-label="Terminer"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${esc(project(t.projectId)?.name || 'Sans projet')} · ${esc(teamName(t.assignedTo))}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="defer-btn" data-defer-task="${t.id}">Reporter</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || `<div class="empty-line">Aucune tâche prévue aujourd’hui.</div>`}
       </div>
     </section>
 
@@ -299,7 +306,7 @@ function renderToday() {
         <div class="watch-list">${blocked.map(p => `<button class="watch-row" data-project="${p.id}"><span class="dot ${p.status === 'blocked' ? 'red' : 'amber'}"></span><div><strong>${esc(p.name)}</strong><small>${esc(p.blocker || p.nextAction)}</small></div></button>`).join('')}</div>
       </div>
       <div>
-        <div class="section-title"><h2>Équipe</h2></div>
+        <div class="section-title"><h2>Équipe</h2><button class="text-button" id="openTeamWorkload">Voir la charge →</button></div>
         <div class="team-list">
           ${state.team.filter(m => m.id !== state.currentUser.id).map(m => {
             const pending = state.tasks.filter(t => t.assignedTo === m.id && t.status !== 'completed').length;
@@ -325,6 +332,7 @@ function renderPlanning() {
   const buckets = ['backlog','this_week','this_month','next_3_months','later'];
   const filteredTasks = state.tasks.filter(t => {
     if (t.status === 'completed') return false;
+    if (t.projectId && project(t.projectId)?.archived) return false;
     if (planningFilterProject !== 'all' && t.projectId !== planningFilterProject) return false;
     if (planningFilterOwner !== 'all' && t.assignedTo !== planningFilterOwner) return false;
     if (planningFilterPriority !== 'all' && t.priority !== planningFilterPriority) return false;
@@ -335,7 +343,7 @@ function renderPlanning() {
     <div class="toolbar">
       <select id="planningProjectFilter">
         <option value="all">Tous les projets</option>
-        ${state.projects.map(p => `<option value="${p.id}" ${planningFilterProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+        ${state.projects.filter(p => !p.archived).map(p => `<option value="${p.id}" ${planningFilterProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
       </select>
       <select id="planningOwnerFilter">
         <option value="all">Tous les responsables</option>
@@ -373,9 +381,10 @@ function renderProjects() {
     ['in_progress', 'En cours'],
     ['blocked', 'Bloqués'],
     ['to_test', 'À tester'],
-    ['completed', 'Terminés']
+    ['completed', 'Terminés'],
+    ['archived', 'Archivés']
   ];
-  const visibleProjects = state.projects.filter(p => projectFilter === 'all' || p.status === projectFilter);
+  const visibleProjects = state.projects.filter(p => projectFilter === 'archived' ? p.archived : (!p.archived && (projectFilter === 'all' || p.status === projectFilter)));
 
   return pageHeader('Projets', 'Vue simple de l’état des projets', '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>') + `
     <div class="tabs">
@@ -397,11 +406,12 @@ function renderProjectDetail(id) {
   const activities = state.activity.filter(a => a.projectId === id).slice(0,5);
   return `
     <button class="back-btn" id="backProjects">← Projets</button>
-    ${pageHeader(p.name, teamName(p.owner), `<button class="secondary-btn" data-edit-project="${p.id}">Modifier le projet</button>`)}
+    ${pageHeader(p.name, teamName(p.owner), `<div class="header-actions">${p.archived ? `<button class="secondary-btn" data-restore-project="${p.id}">Restaurer</button>` : `<button class="secondary-btn" data-edit-project="${p.id}">Modifier</button><button class="archive-btn" data-archive-project="${p.id}">Archiver</button>`}</div>`)}
+    ${p.archived ? `<div class="archive-banner"><strong>Projet archivé</strong><span>Il reste consultable, mais n’apparaît plus dans le pilotage actif.</span></div>` : ''}
     <div class="project-detail-head"><div>${statusBadge(p.status)} ${priorityBadge(p.priority)} <span class="owner-pill">${esc(teamName(p.owner))}</span></div><strong>${p.progress} %</strong></div>
     <div class="progress large"><i style="width:${p.progress}%"></i></div>
     <section class="section info-grid">
-      <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong></div>
+      <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong>${p.blocker && !p.archived ? `<button class="clear-blocker-btn" data-clear-blocker="${p.id}">Lever le blocage</button>` : ''}</div>
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
     </section>
     ${pendingCompletionRequest(p.id) ? `<section class="approval-banner"><div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la décision n’est pas validée.</small></div><button class="primary-btn" data-approval="${pendingCompletionRequest(p.id).id}">Examiner</button></section>` : ''}
@@ -573,7 +583,7 @@ function renderTaskModal() {
     <header><div><small>${existing ? 'MODIFIER LA TÂCHE' : 'NOUVELLE TÂCHE'}</small><h2>${existing ? esc(existing.title) : 'Ajouter une tâche'}</h2></div><button class="icon-btn" id="closeTaskModal">×</button></header>
     <div class="form-grid">
       <label class="form-field form-field-full"><span>Titre</span><input id="taskTitle" type="text" value="${esc(existing?.title || '')}" placeholder="Ex. Tester la nouvelle intégration" maxlength="120" /></label>
-      <label class="form-field form-field-full"><span>Projet</span><select id="taskProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${defaultProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="taskProject"><option value="">Sans projet</option>${state.projects.filter(p => !p.archived || p.id === defaultProject).map(p => `<option value="${p.id}" ${defaultProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
       <div class="form-field form-field-full"><span>Responsable — clique sur une personne</span>${teamPicker('taskOwner', owner)}</div>
       <label class="form-field"><span>Priorité</span><select id="taskPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field"><span>État</span><select id="taskStatus">${Object.entries(statusLabels).map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
@@ -619,7 +629,7 @@ function renderAiSimulationModal() {
         <option value="technical_error">Erreur technique → notification regroupée</option><option value="duplicate_request">Rejouer une requête IA → doublon ignoré</option>
       </select></label>
       <label class="form-field form-field-full"><span>Source</span><select id="aiSource">${Object.entries(aiSourceLabels).map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
-      <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.filter(p => !p.archived).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
       <label class="form-field form-field-full" data-ai-section="detail"><span id="aiDetailLabel">Nouvel élément détecté</span><input id="aiTaskTitle" type="text" value="Ajouter le contrôle automatique des marges" maxlength="180" /></label>
       <label class="form-field" data-ai-section="progress"><span>Nouvelle progression</span><input id="aiProgress" type="number" min="0" max="100" step="5" value="80" /></label>
       <div class="form-field form-field-full" data-ai-section="new-task"><span>Responsable proposé</span>${teamPicker('aiOwner', state.currentUser.id)}</div>
@@ -657,6 +667,46 @@ function renderDocumentModal() {
     <p class="form-note">Pilotage stocke uniquement la référence et le lien. Le fichier reste dans Google Drive.</p>
     <footer><button class="secondary-btn" id="cancelDocumentModal">Annuler</button><button class="primary-btn" id="saveDocument">Lier le document</button></footer>
   </div>`;
+}
+
+function renderArchiveModal(projectId) {
+  const p = project(projectId);
+  if (!p) return '';
+  const openTasks = state.tasks.filter(t => t.projectId === projectId && t.status !== 'completed').length;
+  return `<div class="modal-backdrop" id="archiveBackdrop"></div><div class="modal-card archive-modal" role="dialog" aria-modal="true">
+    <header><div><small>ARCHIVAGE PROJET</small><h2>Archiver ${esc(p.name)} ?</h2></div><button class="icon-btn" id="closeArchive">×</button></header>
+    <div class="archive-summary"><span>▣</span><div><strong>Le projet ne sera pas supprimé.</strong><p>Historique, tâches et documents restent conservés. Il disparaîtra seulement des vues de pilotage actives.</p></div></div>
+    ${openTasks ? `<p class="archive-warning"><strong>${openTasks} tâche${openTasks > 1 ? 's' : ''} encore ouverte${openTasks > 1 ? 's' : ''}.</strong> Elles resteront attachées au projet archivé.</p>` : ''}
+    <footer><button class="secondary-btn" id="cancelArchive">Annuler</button><button class="danger-solid-btn" id="confirmArchive" data-project="${p.id}">Archiver le projet</button></footer>
+  </div>`;
+}
+
+function renderDeferModal(taskId) {
+  const t = task(taskId);
+  if (!t) return '';
+  return `<div class="modal-backdrop" id="deferBackdrop"></div><div class="modal-card defer-modal" role="dialog" aria-modal="true">
+    <header><div><small>REPORTER</small><h2>${esc(t.title)}</h2></div><button class="icon-btn" id="closeDefer">×</button></header>
+    <p class="form-note">Choisis quand tu veux revoir cette tâche. L’action est enregistrée dans l’historique.</p>
+    <div class="defer-options">
+      <button data-defer-choice="tomorrow"><strong>Demain</strong><small>18 septembre</small></button>
+      <button data-defer-choice="next_week"><strong>Semaine prochaine</strong><small>21 septembre</small></button>
+      <button data-defer-choice="this_month"><strong>Plus tard ce mois</strong><small>Roadmap · Ce mois</small></button>
+      <button data-defer-choice="backlog"><strong>À organiser</strong><small>Retirer le jour prévu</small></button>
+    </div>
+    <footer><button class="secondary-btn" id="cancelDefer">Annuler</button></footer>
+  </div>`;
+}
+
+function renderTeamWorkloadModal() {
+  const cards = state.team.map(m => {
+    const tasks = state.tasks.filter(t => t.assignedTo === m.id && t.status !== 'completed' && (!t.projectId || !project(t.projectId)?.archived));
+    const today = tasks.filter(t => t.scheduledFor === '2026-09-17').length;
+    const overdue = tasks.filter(t => t.dueAt && new Date(t.dueAt) < DEMO_NOW).length;
+    const active = tasks.filter(t => t.status === 'in_progress').length;
+    const blockers = state.projects.filter(p => !p.archived && p.owner === m.id && p.blocker).length;
+    return `<button class="workload-card" data-team-planning="${m.id}"><div class="workload-person"><span>${personInitials(m.name)}</span><div><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small></div></div><div class="workload-stats"><span><b>${today}</b><small>Aujourd’hui</small></span><span class="${overdue ? 'stat-alert' : ''}"><b>${overdue}</b><small>Retard</small></span><span><b>${active}</b><small>En cours</small></span><span class="${blockers ? 'stat-warning' : ''}"><b>${blockers}</b><small>Blocage</small></span></div><em>Voir sa Roadmap →</em></button>`;
+  }).join('');
+  return `<div class="modal-backdrop" id="teamWorkloadBackdrop"></div><div class="modal-card workload-modal" role="dialog" aria-modal="true"><header><div><small>ÉQUIPE</small><h2>Charge de travail</h2></div><button class="icon-btn" id="closeTeamWorkload">×</button></header><div class="workload-list">${cards}</div><footer><button class="secondary-btn" id="cancelTeamWorkload">Fermer</button></footer></div>`;
 }
 
 function renderSearchOverlay() {
@@ -1078,6 +1128,7 @@ function advanceTaskStatus(taskId) {
 }
 
 function openTeamPlanning(userId) {
+  teamWorkloadOpen = false;
   planningFilterOwner = userId;
   currentPage = 'planning';
   selectedProjectId = null;
@@ -1134,6 +1185,67 @@ function importDemoBackup() {
   input.click();
 }
 
+function openArchiveModal(projectId) {
+  archiveModalProjectId = projectId;
+  trace(TAGS.ARCHIVE_MODAL, 'Ouverture confirmation archivage', { projectId });
+  render();
+}
+function closeArchiveModal() { archiveModalProjectId = null; render(); }
+function archiveProject(projectId) {
+  const p = project(projectId);
+  if (!p) return;
+  p.archived = true;
+  p.archivedAt = new Date().toISOString();
+  state.changeRequests.filter(r => r.projectId === projectId && r.status === 'pending').forEach(r => { r.status='cancelled'; r.decidedAt=new Date().toISOString(); r.decisionBy='Thibault'; });
+  state.notifications.filter(n => !n.resolved && n.projectId === projectId).forEach(n => { n.resolved=true; n.resolvedAt=new Date().toISOString(); });
+  addActivity({ projectId, text:`Projet archivé : ${p.name}`, internalTag:TAGS.PROJECT_ARCHIVE });
+  persist(TAGS.PROJECT_ARCHIVE, 'Projet archivé', { projectId });
+  archiveModalProjectId = null;
+  projectFilter = 'archived';
+  selectedProjectId = null;
+  render();
+}
+function restoreProject(projectId) {
+  const p = project(projectId);
+  if (!p) return;
+  p.archived = false;
+  p.archivedAt = null;
+  addActivity({ projectId, text:`Projet restauré : ${p.name}`, internalTag:TAGS.PROJECT_RESTORE });
+  persist(TAGS.PROJECT_RESTORE, 'Projet restauré', { projectId });
+  projectFilter = 'all';
+  render();
+}
+function clearProjectBlocker(projectId) {
+  const p = project(projectId);
+  if (!p || !p.blocker) return;
+  const previous = p.blocker;
+  p.blocker = '';
+  if (p.status === 'blocked') p.status = 'in_progress';
+  addActivity({ projectId, text:`Blocage levé : ${previous}`, internalTag:TAGS.PROJECT_BLOCKER_CLEAR });
+  persist(TAGS.PROJECT_BLOCKER_CLEAR, 'Blocage projet levé', { projectId, previous });
+  refreshSmartNotifications();
+  render();
+}
+function openDeferModal(taskId) { deferTaskId = taskId; trace(TAGS.TASK_DEFER, 'Ouverture report tâche', { taskId }); render(); }
+function closeDeferModal() { deferTaskId = null; render(); }
+function deferTask(choice) {
+  const t = task(deferTaskId);
+  if (!t) return;
+  const previousDate = t.scheduledFor;
+  const previousBucket = t.planningBucket;
+  if (choice === 'tomorrow') { t.scheduledFor='2026-09-18'; t.planningBucket='this_week'; }
+  if (choice === 'next_week') { t.scheduledFor='2026-09-21'; t.planningBucket='this_week'; }
+  if (choice === 'this_month') { t.scheduledFor=null; t.planningBucket='this_month'; }
+  if (choice === 'backlog') { t.scheduledFor=null; t.planningBucket='backlog'; }
+  t.planningStatus='planned'; t.needsPlanning=false; t.sortOrder=Date.now();
+  addActivity({ projectId:t.projectId, text:`${t.title} reportée vers ${choice === 'tomorrow' ? 'demain' : choice === 'next_week' ? 'la semaine prochaine' : choice === 'this_month' ? 'ce mois' : 'À organiser'}`, internalTag:TAGS.TASK_DEFER });
+  persist(TAGS.TASK_DEFER, 'Tâche reportée', { taskId:t.id, choice, previousDate, previousBucket, scheduledFor:t.scheduledFor, planningBucket:t.planningBucket });
+  deferTaskId=null;
+  render();
+}
+function openTeamWorkload() { teamWorkloadOpen=true; trace(TAGS.TEAM_WORKLOAD, 'Vue charge équipe ouverte'); render(); }
+function closeTeamWorkload() { teamWorkloadOpen=false; render(); }
+
 function bindEvents() {
   document.querySelector('#quickCreateBtn')?.addEventListener('click', openQuickAction);
   document.querySelector('#closeQuickAction')?.addEventListener('click', closeQuickAction);
@@ -1154,6 +1266,7 @@ function bindEvents() {
   document.querySelectorAll('[data-complete]').forEach(el => el.addEventListener('click', () => completeTask(el.dataset.complete)));
   document.querySelectorAll('[data-task-status]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); advanceTaskStatus(el.dataset.taskStatus); }));
   document.querySelectorAll('[data-team-planning]').forEach(el => el.addEventListener('click', () => openTeamPlanning(el.dataset.teamPlanning)));
+  document.querySelector('#openTeamWorkload')?.addEventListener('click', openTeamWorkload);
   document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openPlanning(el.dataset.plan); }));
   document.querySelectorAll('[data-edit-task]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openTaskEditor(el.dataset.editTask); }));
   document.querySelectorAll('[data-edit-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openProjectModal(el.dataset.editProject); }));
@@ -1247,6 +1360,24 @@ function bindEvents() {
   document.querySelector('#approveApproval')?.addEventListener('click', e => decideApproval(e.currentTarget.dataset.request, true));
   document.querySelector('#rejectApproval')?.addEventListener('click', e => decideApproval(e.currentTarget.dataset.request, false));
 
+  document.querySelectorAll('[data-archive-project]').forEach(el => el.addEventListener('click', () => openArchiveModal(el.dataset.archiveProject)));
+  document.querySelectorAll('[data-restore-project]').forEach(el => el.addEventListener('click', () => restoreProject(el.dataset.restoreProject)));
+  document.querySelectorAll('[data-clear-blocker]').forEach(el => el.addEventListener('click', () => clearProjectBlocker(el.dataset.clearBlocker)));
+  document.querySelector('#closeArchive')?.addEventListener('click', closeArchiveModal);
+  document.querySelector('#cancelArchive')?.addEventListener('click', closeArchiveModal);
+  document.querySelector('#archiveBackdrop')?.addEventListener('click', closeArchiveModal);
+  document.querySelector('#confirmArchive')?.addEventListener('click', e => archiveProject(e.currentTarget.dataset.project));
+
+  document.querySelectorAll('[data-defer-task]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openDeferModal(el.dataset.deferTask); }));
+  document.querySelector('#closeDefer')?.addEventListener('click', closeDeferModal);
+  document.querySelector('#cancelDefer')?.addEventListener('click', closeDeferModal);
+  document.querySelector('#deferBackdrop')?.addEventListener('click', closeDeferModal);
+  document.querySelectorAll('[data-defer-choice]').forEach(el => el.addEventListener('click', () => deferTask(el.dataset.deferChoice)));
+
+  document.querySelector('#closeTeamWorkload')?.addEventListener('click', closeTeamWorkload);
+  document.querySelector('#cancelTeamWorkload')?.addEventListener('click', closeTeamWorkload);
+  document.querySelector('#teamWorkloadBackdrop')?.addEventListener('click', closeTeamWorkload);
+
   document.querySelector('#resetDemo')?.addEventListener('click', () => {
     if (!window.confirm('Réinitialiser toute la démo locale ?')) return;
     state = resetState();
@@ -1274,6 +1405,9 @@ function bindEvents() {
     quickActionOpen = false;
     activityProjectFilter = 'all';
     activitySearch = '';
+    archiveModalProjectId = null;
+    deferTaskId = null;
+    teamWorkloadOpen = false;
     mobilePlanningBucket = 'this_month';
     render();
   });
