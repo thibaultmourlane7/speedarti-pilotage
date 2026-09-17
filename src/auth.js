@@ -8,28 +8,19 @@
     AUTH_SESSION: 'PILOT-AUTH-004',
     AUTH_SIGNOUT: 'PILOT-AUTH-005',
     AUTH_PROFILE: 'PILOT-AUTH-006',
-    PUBLIC_CONFIG: 'PILOT-SEC-001'
+    PUBLIC_CONFIG: 'PILOT-SEC-001',
+    LIVE_UI: 'PILOT-UI-039'
   });
-
-  // Les adresses autorisées restent uniquement dans Supabase.
-  // Le dépôt GitHub public ne contient aucune liste d'e-mails de l'équipe.
-  const LOCAL_IDENTITY_BY_NAME = Object.freeze({
-    'thibault': { localId: 'u-thibault', name: 'Thibault', initials: 'TM', teamRole: 'Direction', role: 'admin' },
-    'anne-sophie': { localId: 'u-anne', name: 'Anne-Sophie', initials: 'AS', teamRole: 'Technique', role: 'member' },
-    'guillaume': { localId: 'u-guillaume', name: 'Guillaume', initials: 'GM', teamRole: 'Marketing / Métier', role: 'member' }
-  });
-
-  const BASE_STORAGE_KEY = 'speedarti-pilotage-demo-v1';
-  const AUTH_USER_KEY = 'speedarti-pilotage-auth-user';
-  const USER_STATE_PREFIX = 'speedarti-pilotage-user-state:';
 
   const authRoot = document.querySelector('#auth-root');
   const appRoot = document.querySelector('#app');
+
   let client = null;
   let activeSession = null;
   let activeProfile = null;
+  let activeMember = null;
   let appLoaded = false;
-  let accountObserver = null;
+  let uiObserver = null;
 
   function trace(tag, message, details = {}) {
     console.debug(`[${tag}] ${message}`, details);
@@ -39,50 +30,39 @@
     return String(value).trim().toLowerCase();
   }
 
-  function localIdentityFromProfile(profile) {
-    const key = String(profile?.display_name || '').trim().toLowerCase();
-    const direct = LOCAL_IDENTITY_BY_NAME[key];
-    if (direct) return direct;
-
-    // Secours par initiales : ne contient aucune donnée d'authentification.
-    const initials = String(profile?.initials || '').trim().toUpperCase();
-    if (initials === 'TM') return LOCAL_IDENTITY_BY_NAME['thibault'];
-    if (initials === 'AS') return LOCAL_IDENTITY_BY_NAME['anne-sophie'];
-    if (initials === 'GM') return LOCAL_IDENTITY_BY_NAME['guillaume'];
-    return null;
-  }
-
   function htmlEscape(value = '') {
     return String(value).replace(/[&<>'"]/g, c => ({
       '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'
     }[c]));
   }
 
-
   function renderLoading(message = 'Connexion sécurisée…') {
+    authRoot.hidden = false;
     authRoot.innerHTML = `
       <main class="auth-shell">
         <section class="auth-card auth-loading-card">
           <div class="auth-brand"><span>S</span><div><strong>SpeedArti</strong><small>Pilotage</small></div></div>
           <div class="auth-loader"></div>
           <h1>${htmlEscape(message)}</h1>
-          <p>Vérification de la session Supabase.</p>
+          <p>Connexion au socle Supabase.</p>
         </section>
       </main>`;
   }
 
   function renderAuth(message = '', mode = 'login') {
-    const isSignup = mode === 'signup';
+    const signup = mode === 'signup';
+    authRoot.hidden = false;
+    appRoot.hidden = true;
     authRoot.innerHTML = `
       <main class="auth-shell">
         <section class="auth-card">
           <div class="auth-brand"><span>S</span><div><strong>SpeedArti</strong><small>Pilotage d’entreprise</small></div></div>
           <div class="auth-heading">
             <span class="auth-kicker">ACCÈS ÉQUIPE</span>
-            <h1>${isSignup ? 'Créer mon accès' : 'Se connecter'}</h1>
-            <p>${isSignup
-              ? 'Utilise ton adresse professionnelle autorisée et choisis ton mot de passe.'
-              : 'Accès réservé à Thibault, Anne-Sophie et Guillaume.'}</p>
+            <h1>${signup ? 'Créer mon accès' : 'Se connecter'}</h1>
+            <p>${signup
+              ? 'Utilise l’adresse e-mail qui a été autorisée pour ton compte Pilotage.'
+              : 'Accès sécurisé par Supabase.'}</p>
           </div>
 
           ${message ? `<div class="auth-message" role="status">${htmlEscape(message)}</div>` : ''}
@@ -94,18 +74,18 @@
             </label>
             <label>
               <span>Mot de passe</span>
-              <input id="authPassword" type="password" autocomplete="${isSignup ? 'new-password' : 'current-password'}" placeholder="8 caractères minimum" minlength="8" required />
+              <input id="authPassword" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" placeholder="8 caractères minimum" minlength="8" required />
             </label>
-            <button class="auth-primary" type="submit">${isSignup ? 'Créer mon accès' : 'Se connecter'}</button>
+            <button class="auth-primary" type="submit">${signup ? 'Créer mon accès' : 'Se connecter'}</button>
           </form>
 
           <button id="switchAuthMode" class="auth-secondary" type="button">
-            ${isSignup ? 'J’ai déjà un compte' : 'Première connexion ? Créer mon accès'}
+            ${signup ? 'J’ai déjà un compte' : 'Première connexion ? Créer mon accès'}
           </button>
 
           <div class="auth-security">
             <span>✓</span>
-            <p>Les adresses autorisées sont contrôlées côté Supabase. Une adresse inconnue ne peut pas créer de profil Pilotage.</p>
+            <p>Les droits sont contrôlés côté Supabase. Les données Pilotage sont maintenant synchronisées avec la base centrale.</p>
           </div>
         </section>
       </main>`;
@@ -113,204 +93,149 @@
     const form = document.querySelector('#pilotageAuthForm');
     const email = document.querySelector('#authEmail');
     const password = document.querySelector('#authPassword');
-    const switcher = document.querySelector('#switchAuthMode');
 
-    form?.addEventListener('submit', async (event) => {
+    form?.addEventListener('submit', async event => {
       event.preventDefault();
       const emailValue = normalizeEmail(email?.value);
       const passwordValue = password?.value || '';
 
-      if (passwordValue.length < 8) {
-        showInlineError('Le mot de passe doit contenir au moins 8 caractères.');
-        password?.focus();
-        return;
-      }
+      if (!emailValue) return showError('Renseigne ton adresse e-mail.');
+      if (passwordValue.length < 8) return showError('Le mot de passe doit contenir au moins 8 caractères.');
 
-      setFormBusy(true);
+      setBusy(true);
       try {
-        if (isSignup) await signUp(emailValue, passwordValue);
+        if (signup) await signUp(emailValue, passwordValue);
         else await signIn(emailValue, passwordValue);
       } finally {
-        if (!activeSession) setFormBusy(false);
+        if (!activeSession) setBusy(false);
       }
     });
 
-    switcher?.addEventListener('click', () => renderAuth('', isSignup ? 'login' : 'signup'));
+    document.querySelector('#switchAuthMode')?.addEventListener('click', () => {
+      renderAuth('', signup ? 'login' : 'signup');
+    });
+
     email?.focus();
   }
 
-  function showInlineError(message) {
+  function showError(message) {
     let box = document.querySelector('.auth-message');
     if (!box) {
       box = document.createElement('div');
       box.className = 'auth-message auth-error';
-      box.setAttribute('role', 'alert');
       document.querySelector('.auth-heading')?.after(box);
     }
     box.classList.add('auth-error');
     box.textContent = message;
   }
 
-  function setFormBusy(busy) {
+  function setBusy(busy) {
     document.querySelectorAll('#pilotageAuthForm input, #pilotageAuthForm button, #switchAuthMode')
       .forEach(el => { el.disabled = busy; });
-    const submit = document.querySelector('#pilotageAuthForm .auth-primary');
-    if (submit && busy) submit.textContent = 'Connexion…';
   }
 
   async function signIn(email, password) {
-    trace(TAGS.AUTH_SIGNIN, 'Tentative de connexion', { email });
+    trace(TAGS.AUTH_SIGNIN, 'Connexion demandée', { email });
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) {
-      trace(TAGS.AUTH_SIGNIN, 'Connexion refusée', { email, error: error.message });
-      showInlineError(
-        /invalid login credentials/i.test(error.message)
-          ? 'E-mail ou mot de passe incorrect.'
-          : error.message
-      );
+      showError(/invalid login credentials/i.test(error.message)
+        ? 'E-mail ou mot de passe incorrect.'
+        : error.message);
       return;
     }
     if (data?.session) await activateSession(data.session);
   }
 
   async function signUp(email, password) {
-    trace(TAGS.AUTH_SIGNUP, 'Création d’accès demandée', { email });
-
-    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    trace(TAGS.AUTH_SIGNUP, 'Création accès demandée', { email });
     const { data, error } = await client.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: redirectTo,
+        emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
         data: { pilotage_access: true }
       }
     });
 
     if (error) {
-      trace(TAGS.AUTH_SIGNUP, 'Création d’accès refusée', { email, error: error.message });
-      const serverRejected = /database|saving new user|not allowed|unauthorized/i.test(error.message);
-      showInlineError(serverRejected
-        ? 'Cette adresse n’est pas autorisée ou le compte ne peut pas être créé.'
+      showError(/database|not authorized|not allowed|saving new user/i.test(error.message)
+        ? 'Cette adresse n’est pas autorisée pour Pilotage.'
         : error.message);
       return;
     }
 
-    if (data?.session) {
-      await activateSession(data.session);
-      return;
-    }
+    if (data?.session) return activateSession(data.session);
 
-    renderAuth(
-      'Compte créé. Vérifie l’e-mail de confirmation puis reviens ici pour te connecter.',
-      'login'
-    );
+    renderAuth('Compte créé. Confirme l’e-mail Supabase si demandé puis reconnecte-toi.', 'login');
   }
 
-  async function fetchProfile(userId, attempt = 0) {
-    const { data, error } = await client
-      .from('profiles')
-      .select('id, display_name, initials, team_role, role, active')
-      .eq('id', userId)
-      .maybeSingle();
+  async function fetchIdentity(userId) {
+    const [{ data: profile, error: profileError }, { data: member, error: memberError }] = await Promise.all([
+      client.from('profiles')
+        .select('id, display_name, initials, team_role, role, active')
+        .eq('id', userId)
+        .maybeSingle(),
+      client.from('team_members')
+        .select('id, client_key, profile_id, display_name, initials, team_role, role, active')
+        .eq('profile_id', userId)
+        .maybeSingle()
+    ]);
 
-    if (!error && data) return data;
+    if (profileError) throw profileError;
+    if (memberError) throw memberError;
+    if (!profile || !member) throw new Error('Profil Pilotage introuvable.');
+    if (!profile.active || !member.active) throw new Error('Cet accès Pilotage a été désactivé.');
 
-    if (attempt < 3) {
-      await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
-      return fetchProfile(userId, attempt + 1);
-    }
-
-    if (error) throw error;
-    throw new Error('Profil Pilotage introuvable.');
-  }
-
-  function saveCurrentStateForUser(authUserId) {
-    if (!authUserId) return;
-    const raw = localStorage.getItem(BASE_STORAGE_KEY);
-    if (raw) localStorage.setItem(`${USER_STATE_PREFIX}${authUserId}`, raw);
-  }
-
-  function prepareLocalStateForSession(session, profile) {
-    const email = normalizeEmail(session.user.email);
-    const approved = localIdentityFromProfile(profile);
-    if (!approved) throw new Error('Profil équipe non reconnu.');
-
-    const previousAuthUserId = localStorage.getItem(AUTH_USER_KEY);
-    if (previousAuthUserId && previousAuthUserId !== session.user.id) {
-      saveCurrentStateForUser(previousAuthUserId);
-      localStorage.removeItem(BASE_STORAGE_KEY);
-    }
-
-    const userStateKey = `${USER_STATE_PREFIX}${session.user.id}`;
-    const personalState = localStorage.getItem(userStateKey);
-
-    if (personalState) {
-      localStorage.setItem(BASE_STORAGE_KEY, personalState);
-    }
-
-    let stored = {};
-    try {
-      stored = JSON.parse(localStorage.getItem(BASE_STORAGE_KEY) || '{}');
-    } catch {
-      stored = {};
-    }
-
-    stored.currentUser = {
-      id: approved.localId,
-      authUserId: session.user.id,
-      email,
-      name: profile.display_name || approved.name,
-      initials: profile.initials || approved.initials,
-      role: profile.role || approved.role,
-      teamRole: profile.team_role || approved.teamRole
-    };
-
-    localStorage.setItem(BASE_STORAGE_KEY, JSON.stringify(stored));
-    localStorage.setItem(AUTH_USER_KEY, session.user.id);
-
-    trace(TAGS.AUTH_PROFILE, 'Profil local associé à la session Supabase', {
-      email,
-      authUserId: session.user.id,
-      localId: approved.localId,
-      role: stored.currentUser.role
-    });
+    return { profile, member };
   }
 
   async function activateSession(session) {
-    renderLoading('Ouverture de Pilotage…');
+    if (activeSession?.user?.id === session.user.id && appLoaded) return;
+
+    renderLoading('Chargement des données Pilotage…');
 
     try {
-      const email = normalizeEmail(session.user.email);
-      const profile = await fetchProfile(session.user.id);
-      if (!profile.active) {
-        await client.auth.signOut();
-        renderAuth('Cet accès Pilotage a été désactivé.');
-        return;
-      }
+      const { profile, member } = await fetchIdentity(session.user.id);
 
       activeSession = session;
       activeProfile = profile;
-      prepareLocalStateForSession(session, profile);
+      activeMember = member;
+
+      window.PILOTAGE_AUTH = Object.freeze({
+        userId: session.user.id,
+        email: normalizeEmail(session.user.email),
+        profile: { ...profile },
+        member: { ...member }
+      });
+      window.PILOTAGE_SUPABASE_CLIENT = client;
+
+      trace(TAGS.AUTH_PROFILE, 'Identité Pilotage chargée', {
+        member: member.client_key,
+        role: member.role
+      });
+
+      if (!window.PILOTAGE_REMOTE?.prepareSession) {
+        throw new Error('Module de synchronisation Supabase absent.');
+      }
+
+      await window.PILOTAGE_REMOTE.prepareSession({
+        supabaseClient: client,
+        userId: session.user.id,
+        profile,
+        member
+      });
 
       trace(TAGS.AUTH_SESSION, 'Session Supabase active', {
         userId: session.user.id,
-        email,
-        role: profile.role
+        member: member.client_key
       });
 
       authRoot.innerHTML = '';
       authRoot.hidden = true;
       appRoot.hidden = false;
 
-      window.PILOTAGE_AUTH = Object.freeze({
-        userId: session.user.id,
-        email,
-        profile: { ...profile }
-      });
-      window.PILOTAGE_SUPABASE_CLIENT = client;
-
       await loadPilotageApp();
-      installAccountBinding();
+      installLiveUi();
     } catch (error) {
       console.error(error);
       renderAuth(`Connexion impossible : ${error.message || 'erreur inconnue'}`);
@@ -338,56 +263,69 @@
     });
   }
 
-  function installAccountBinding() {
-    bindAccountControl();
+  function installLiveUi() {
+    patchLiveUi();
 
-    if (accountObserver) accountObserver.disconnect();
-    accountObserver = new MutationObserver(() => bindAccountControl());
-    accountObserver.observe(appRoot, { childList: true, subtree: true });
+    if (uiObserver) uiObserver.disconnect();
+    uiObserver = new MutationObserver(() => patchLiveUi());
+    uiObserver.observe(appRoot, { childList: true, subtree: true });
+
+    trace(TAGS.LIVE_UI, 'Corrections UI session active');
   }
 
-  function bindAccountControl() {
+  function patchLiveUi() {
+    const greeting = [...document.querySelectorAll('.page-header h1')]
+      .find(el => el.textContent?.trim() === 'Bonjour Thibault');
+    if (greeting && activeMember) greeting.textContent = `Bonjour ${activeMember.display_name}`;
+
     const avatar = document.querySelector('.avatar');
-    if (!avatar || avatar.dataset.authBound === 'true') return;
+    if (avatar && activeMember) {
+      avatar.textContent = activeMember.initials || '';
+      avatar.dataset.authBound = 'true';
+      avatar.setAttribute('role', 'button');
+      avatar.setAttribute('tabindex', '0');
+      avatar.setAttribute('aria-label', 'Ouvrir le menu du compte');
+      avatar.title = `${activeMember.display_name} — Supabase`;
 
-    avatar.dataset.authBound = 'true';
-    avatar.setAttribute('role', 'button');
-    avatar.setAttribute('tabindex', '0');
-    avatar.setAttribute('aria-label', 'Ouvrir le menu du compte');
-    avatar.title = `${activeProfile?.display_name || 'Compte'} — session Supabase`;
-
-    const open = () => toggleAccountMenu(avatar);
-    avatar.addEventListener('click', open);
-    avatar.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        open();
+      if (avatar.dataset.accountListener !== 'true') {
+        avatar.dataset.accountListener = 'true';
+        avatar.addEventListener('click', () => toggleAccountMenu(avatar));
+        avatar.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleAccountMenu(avatar);
+          }
+        });
       }
-    });
+    }
   }
 
   function toggleAccountMenu(anchor) {
-    const existing = document.querySelector('#pilotageAccountMenu');
-    if (existing) {
-      existing.remove();
-      return;
-    }
+    const old = document.querySelector('#pilotageAccountMenu');
+    if (old) return old.remove();
 
-    const email = normalizeEmail(activeSession?.user?.email);
+    const status = window.PILOTAGE_REMOTE?.getStatus?.() || {};
     const menu = document.createElement('aside');
     menu.id = 'pilotageAccountMenu';
     menu.className = 'auth-account-menu';
     menu.innerHTML = `
       <div class="auth-account-head">
-        <span>${htmlEscape(activeProfile?.initials || 'SA')}</span>
+        <span>${htmlEscape(activeMember?.initials || 'SA')}</span>
         <div>
-          <strong>${htmlEscape(activeProfile?.display_name || email)}</strong>
-          <small>${htmlEscape(activeProfile?.team_role || '')}</small>
+          <strong>${htmlEscape(activeMember?.display_name || '')}</strong>
+          <small>${htmlEscape(activeMember?.team_role || '')}</small>
         </div>
       </div>
-      <div class="auth-account-email">${htmlEscape(email)}</div>
+      <div class="auth-account-email">${htmlEscape(normalizeEmail(activeSession?.user?.email))}</div>
       <div class="auth-account-status"><i></i> Supabase connecté</div>
-      <div class="auth-account-local">Données métier : encore locales sur cet appareil — migration Supabase à l’étape suivante.</div>
+      <div class="auth-account-local" style="background:${status.lastError ? '#fef2f2' : '#f0fdf4'};color:${status.lastError ? '#b91c1c' : '#166534'}">
+        ${status.lastError
+          ? `Erreur de synchro : ${htmlEscape(status.lastError)}`
+          : status.hasPending
+            ? 'Synchronisation en cours…'
+            : 'Données métier centralisées dans Supabase.'}
+      </div>
+      <button id="pilotageRefreshRemote" type="button">Actualiser depuis Supabase</button>
       <button id="pilotageSignOut" type="button">Se déconnecter</button>
     `;
 
@@ -397,50 +335,35 @@
     menu.style.top = `${Math.min(window.innerHeight - menu.offsetHeight - 12, rect.bottom + 8)}px`;
     menu.style.right = `${Math.max(12, window.innerWidth - rect.right)}px`;
 
+    menu.querySelector('#pilotageRefreshRemote')?.addEventListener('click', async () => {
+      menu.remove();
+      await window.PILOTAGE_REMOTE?.refreshFromSupabase?.();
+    });
     menu.querySelector('#pilotageSignOut')?.addEventListener('click', signOut);
   }
 
   async function signOut() {
-    const userId = activeSession?.user?.id;
-    saveCurrentStateForUser(userId);
-
-    trace(TAGS.AUTH_SIGNOUT, 'Déconnexion demandée', { userId });
-
+    try { await window.PILOTAGE_REMOTE?.flush?.(); }
+    catch {}
     document.querySelector('#pilotageAccountMenu')?.remove();
+    trace(TAGS.AUTH_SIGNOUT, 'Déconnexion');
     await client.auth.signOut();
-
-    localStorage.removeItem(BASE_STORAGE_KEY);
-    localStorage.removeItem(AUTH_USER_KEY);
     window.location.reload();
   }
 
-  async function handleAuthChange(event, session) {
-    if (event === 'SIGNED_OUT' || !session) {
-      if (!appLoaded) renderAuth();
-      return;
-    }
-
-    if (event === 'SIGNED_IN' && (!activeSession || activeSession.user.id !== session.user.id)) {
-      await activateSession(session);
-    }
-  }
-
   async function boot() {
-    trace(TAGS.AUTH_GATE, 'Initialisation du contrôle d’accès');
+    trace(TAGS.AUTH_GATE, 'Initialisation Auth V12');
     renderLoading();
 
     const config = window.PILOTAGE_SUPABASE;
     if (!config?.url || !config?.publishableKey) {
-      renderAuth('Configuration Supabase manquante.');
-      return;
+      return renderAuth('Configuration Supabase manquante.');
     }
-
     if (!window.supabase?.createClient) {
-      renderAuth('Le module Supabase n’a pas pu être chargé. Vérifie la connexion Internet.');
-      return;
+      return renderAuth('Le module Supabase n’a pas pu être chargé.');
     }
 
-    trace(TAGS.PUBLIC_CONFIG, 'Configuration publique Supabase chargée', { url: config.url });
+    trace(TAGS.PUBLIC_CONFIG, 'Configuration publique chargée', { url: config.url });
 
     client = window.supabase.createClient(config.url, config.publishableKey, {
       auth: {
@@ -452,16 +375,18 @@
 
     window.PILOTAGE_SUPABASE_CLIENT = client;
 
-    const { data, error } = await client.auth.getSession();
-    if (error) {
-      console.error(error);
-      renderAuth('Impossible de vérifier la session Supabase.');
-      return;
-    }
-
     client.auth.onAuthStateChange((event, session) => {
-      setTimeout(() => handleAuthChange(event, session), 0);
+      if (event === 'SIGNED_OUT' || !session) {
+        if (!appLoaded) renderAuth();
+        return;
+      }
+      if (event === 'SIGNED_IN' && !appLoaded) {
+        setTimeout(() => activateSession(session), 0);
+      }
     });
+
+    const { data, error } = await client.auth.getSession();
+    if (error) return renderAuth('Impossible de vérifier la session Supabase.');
 
     if (data?.session) await activateSession(data.session);
     else renderAuth();
