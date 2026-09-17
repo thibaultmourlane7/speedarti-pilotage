@@ -69,3 +69,26 @@ Ces balises restent strictement internes et ne doivent jamais être affichées d
 6. Si la fenêtre est annulée, l’élément reste « À organiser » et la notification reste active.
 
 Dans la vraie version, la simulation sera remplacée par l’API sécurisée sans modifier ce comportement fonctionnel.
+
+## V5 — Édition rapide, assignation et pilotage opérationnel
+
+| Balise | Fonction | Visible UI |
+|---|---|---|
+| `PILOT-TASK-002` | Modifier une tâche existante | Non |
+| `PILOT-TASK-003` | Affecter / réaffecter une tâche | Non |
+| `PILOT-TASK-004` | Jour prévu / échéance d’une tâche | Non |
+| `PILOT-PROJ-002` | Modifier un projet | Non |
+| `PILOT-PROJ-003` | Changer le responsable d’un projet | Non |
+| `PILOT-PROJ-004` | Modifier la progression d’un projet | Non |
+| `PILOT-UI-018` | Sélecteur visuel de responsable | Non (balise) |
+| `PILOT-UI-019` | Éditeur complet de tâche | Non (balise) |
+| `PILOT-UI-020` | Éditeur complet de projet | Non (balise) |
+| `PILOT-UI-021` | Vues Agenda Aujourd’hui / Semaine / Mois | Non (balise) |
+| `PILOT-UI-022` | Recherche et filtre Documents | Non (balise) |
+| `PILOT-UI-023` | Fenêtre de liaison Google Drive | Non (balise) |
+| `PILOT-UI-024` | Action explicite Déplacer / dater sur Roadmap mobile | Non (balise) |
+| `PILOT-DRIVE-001` | Ajouter une référence de document Drive | Non |
+
+### Règle V5
+
+L’assignation ne dépend plus d’un simple menu déroulant : Thibault, Anne-Sophie et Guillaume sont proposés sous forme de choix visuels cliquables. La valeur sélectionnée reste une donnée structurée interne (`assignedTo` / `owner`) et les balises restent invisibles dans l’interface.
