@@ -147,3 +147,15 @@ L’assignation ne dépend plus d’un simple menu déroulant : Thibault, Anne-S
 - Les notifications peuvent être marquées lues en masse sans être considérées comme résolues.
 - Une requête IA déjà traitée est ignorée sans recréer de tâche ni de notification métier en double.
 - Export / import JSON concerne uniquement la démo locale. En production, Supabase deviendra la source structurée centrale.
+
+
+## V8 — Finalisation démo avant Supabase
+
+| ID | Nom | Description | Fichier / fonction | Statut |
+|---|---|---|---|---|
+| PILOT-TASK-006 | Report tâche | Reporter une tâche vers demain, semaine prochaine, ce mois ou À organiser. | `app.js` / `deferTask` | Actif |
+| PILOT-PROJ-008 | Archivage projet | Archivage logique avec confirmation humaine, sans suppression des données. | `app.js` / `archiveProject` | Actif |
+| PILOT-PROJ-009 | Restauration projet | Réactivation d’un projet archivé. | `app.js` / `restoreProject` | Actif |
+| PILOT-PROJ-010 | Lever blocage | Suppression explicite d’un blocage et résolution des alertes associées. | `app.js` / `clearProjectBlocker` | Actif |
+| PILOT-UI-032 | Modale archivage | Confirmation visuelle avant archivage. | `app.js` / `renderArchiveModal` | Actif |
+| PILOT-UI-033 | Charge équipe | Synthèse simple Aujourd’hui / Retards / En cours / Blocages par membre. | `app.js` / `renderTeamWorkloadModal` | Actif |
