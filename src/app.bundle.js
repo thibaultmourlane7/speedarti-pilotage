@@ -126,6 +126,7 @@ const initialState = {
   ]
 };
 
+
 // PILOT-DEMO-002 — Persistance locale de démo. Remplacée plus tard par Supabase.
 const STORAGE_KEY = 'speedarti-pilotage-demo-v1';
 
@@ -150,6 +151,7 @@ function resetState() {
   localStorage.removeItem(STORAGE_KEY);
   return clone(initialState);
 }
+
 
 // Référentiel minimal utilisé par la démo. Les balises ne sont jamais rendues dans l'interface.
 const TAGS = Object.freeze({
@@ -232,6 +234,12 @@ const TAGS = Object.freeze({
   REPORT_VALIDATE: 'PILOT-REPORT-004',
   REPORT_CONSOLIDATE: 'PILOT-REPORT-005',
   REPORT_MULTI_SOURCE: 'PILOT-REPORT-006',
+  REPORT_PERSON_PRESET: 'PILOT-REPORT-007',
+  PROJECT_BLOCKED_FILTER: 'PILOT-PROJ-011',
+  NOTIF_RETRY: 'PILOT-NOTIF-012',
+  MOBILE_REPORT_LAYOUT: 'PILOT-UI-036',
+  STATIC_CONTROL_FIX: 'PILOT-UI-037',
+  MOBILE_TASK_ACTIONS: 'PILOT-UI-038',
   NOTIF_RESOLVE: 'PILOT-NOTIF-009'
 });
 
@@ -239,6 +247,7 @@ function trace(tag, message, details = {}) {
   // Invisible pour l'utilisateur. Disponible dans la console pour le diagnostic.
   console.debug(`[${tag}] ${message}`, details);
 }
+
 
 let state = loadState();
 let currentPage = 'today';
@@ -273,6 +282,7 @@ let dailyReportModalOpen = false;
 let dailyReportEditId = null;
 let dailyReportDate = '2026-09-17';
 let dailyReportPersonFilter = 'all';
+let dailyReportPresetPersonId = null;
 
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
@@ -507,7 +517,7 @@ function layout(content) {
             <button class="quick-create-btn" id="quickCreateBtn" title="Actions rapides"><span>＋</span><b>Créer</b></button><button class="demo-ai-btn" id="simulateAiBtn" title="Simuler une mise à jour ChatGPT ou Claude"><span>✦</span><b>IA démo</b></button>
             <button class="icon-btn search-btn" id="searchBtn" aria-label="Rechercher">⌕</button>
             <button class="icon-btn notif-btn" id="notificationBtn" aria-label="Notifications">♢${unread ? `<b>${unread}</b>` : ''}</button>
-            <button class="avatar" title="Thibault">${esc(state.currentUser.initials)}</button>
+            <span class="avatar" title="Thibault" aria-label="Utilisateur Thibault">${esc(state.currentUser.initials)}</span>
           </div>
         </header>
         <main class="content">${content}</main>
@@ -709,7 +719,7 @@ function renderToday() {
     </section>
     <section class="section daily-report-today">
       <div class="section-title"><h2>Compte rendu du jour</h2><button class="text-button" data-page="reports">Voir les comptes rendus →</button></div>
-      <button class="daily-report-summary-card" data-page="reports"><div><span class="report-progress-ring">${reportSummary.received}/${reportSummary.expected}</span><div><strong>${reportSummary.text}</strong><small>${reportSummary.validated}/${reportSummary.sources || 0} source${reportSummary.sources > 1 ? 's' : ''} validée${reportSummary.sources > 1 ? 's' : ''} · multi-IA + manuel</small></div></div><span>Ouvrir →</span></button>
+      <button class="daily-report-summary-card" data-page="reports"><div><span class="report-progress-ring">${reportSummary.received}/${reportSummary.expected}</span><div><strong>${reportSummary.text}</strong><small>${reportSummary.sources ? `${reportSummary.validated}/${reportSummary.sources} source${reportSummary.sources > 1 ? 's' : ''} validée${reportSummary.sources > 1 ? 's' : ''}` : 'Aucune source reçue'} · multi-IA + manuel</small></div></div><span>Ouvrir →</span></button>
     </section>
     <section class="section">
       <div class="section-title"><h2>Agenda du jour</h2><button class="text-button" data-page="calendar">Voir l’agenda →</button></div>
@@ -809,7 +819,13 @@ function renderProjects() {
     ['completed', 'Terminés'],
     ['archived', 'Archivés']
   ];
-  const visibleProjects = state.projects.filter(p => projectFilter === 'archived' ? p.archived : (!p.archived && (projectFilter === 'all' || p.status === projectFilter)));
+  const visibleProjects = state.projects.filter(p => {
+    if (projectFilter === 'archived') return Boolean(p.archived);
+    if (p.archived) return false;
+    if (projectFilter === 'all') return true;
+    if (projectFilter === 'blocked') return p.status === 'blocked' || Boolean(p.blocker);
+    return p.status === projectFilter;
+  });
 
   return pageHeader('Projets', 'Vue simple de l’état des projets', '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>') + `
     <div class="tabs">
@@ -869,7 +885,12 @@ function renderCalendar() {
       <button class="${calendarView === 'week' ? 'active' : ''}" data-calendar-view="week">Semaine</button>
       <button class="${calendarView === 'month' ? 'active' : ''}" data-calendar-view="month">Mois</button>
     </div>
-    <section class="section"><div class="date-heading">${title}</div><div class="agenda-list">${visible.map(e => `<button class="agenda-row ${e.source === 'google' ? 'source-google' : 'source-speedarti'} ${e.label === 'Échéance' ? 'source-deadline' : ''}" ${e.taskId ? `data-edit-task="${e.taskId}"` : ''}><time>${calendarView === 'today' ? formatTime(e.at) : `${dateKey(e.at).slice(8,10)}/${dateKey(e.at).slice(5,7)} ${formatTime(e.at)}`}</time><div><strong>${esc(e.title)}</strong><small>${esc(e.label)}</small></div></button>`).join('') || '<div class="empty-line">Aucun élément dans cette période.</div>'}</div></section>`;
+    <section class="section"><div class="date-heading">${title}</div><div class="agenda-list">${visible.map(e => {
+      const inner = `<time>${calendarView === 'today' ? formatTime(e.at) : `${dateKey(e.at).slice(8,10)}/${dateKey(e.at).slice(5,7)} ${formatTime(e.at)}`}</time><div><strong>${esc(e.title)}</strong><small>${esc(e.label)}</small></div>`;
+      return e.taskId
+        ? `<button class="agenda-row source-speedarti ${e.label === 'Échéance' ? 'source-deadline' : ''}" data-edit-task="${e.taskId}">${inner}</button>`
+        : `<div class="agenda-row source-google">${inner}</div>`;
+    }).join('') || '<div class="empty-line">Aucun élément dans cette période.</div>'}</div></section>`;
 }
 
 function renderDocuments() {
@@ -965,7 +986,7 @@ function renderDailyReportCard(member, reports) {
 function renderDailyReports() {
   const summary = teamDailySummary(dailyReportDate);
   const members = dailyReportPersonFilter === 'all' ? state.team : state.team.filter(m => m.id === dailyReportPersonFilter);
-  return pageHeader('Comptes rendus', 'Plusieurs IA peuvent contribuer pour une même personne ; Pilotage consolide ensuite la journée', '<div class="header-actions"><button class="secondary-btn" id="collectDailyReports">✦ Simuler collecte multi-IA</button><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
+  return pageHeader('Comptes rendus', 'Plusieurs IA peuvent contribuer pour une même personne ; Pilotage consolide ensuite la journée', '<div class="header-actions report-header-actions"><button class="secondary-btn" id="collectDailyReports">✦ Simuler collecte multi-IA</button><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
     <section class="report-automation-banner"><div><span>✦</span><div><strong>Automatisation multi-IA prévue</strong><small>Une personne peut utiliser plusieurs IA. Chaque agent envoie uniquement son mini compte rendu autorisé ; Pilotage les regroupe ensuite par personne et par journée, sans que les IA lisent les conversations des autres.</small></div></div></section>
     <div class="toolbar report-toolbar"><label class="report-date-field"><span>Journée</span><input id="reportDateFilter" type="date" value="${dailyReportDate}" /></label><select id="reportPersonFilter"><option value="all">Toute l’équipe</option>${state.team.map(m => `<option value="${m.id}" ${dailyReportPersonFilter === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
     <section class="team-report-summary">
@@ -977,7 +998,7 @@ function renderDailyReports() {
 
 function renderDailyReportModal() {
   const report = dailyReportEditId ? state.dailyReports.find(r => r.id === dailyReportEditId) : null;
-  const selectedPerson = report?.personId || state.currentUser.id;
+  const selectedPerson = report?.personId || dailyReportPresetPersonId || state.currentUser.id;
   const selectedDate = report?.reportDate || dailyReportDate;
   const achievements = (report?.achievements || []).join('\n');
   const blockers = (report?.blockers || []).join('\n');
@@ -1005,13 +1026,18 @@ function renderDailyReportModal() {
 
 function openDailyReportModal(reportId = null, personId = null) {
   dailyReportEditId = reportId;
+  dailyReportPresetPersonId = reportId ? null : (personId || null);
   dailyReportModalOpen = true;
   if (!reportId && personId) {
     const existing = manualDailyReportForPerson(personId, dailyReportDate);
-    if (existing) dailyReportEditId = existing.id;
+    if (existing) {
+      dailyReportEditId = existing.id;
+      dailyReportPresetPersonId = null;
+    }
   }
   notificationOpen = false;
   quickActionOpen = false;
+  trace(TAGS.REPORT_PERSON_PRESET, 'Personne préselectionnée pour le compte rendu', { personId:dailyReportPresetPersonId });
   trace(TAGS.REPORT_MODAL, 'Ouverture compte rendu', { reportId:dailyReportEditId, personId });
   render();
 }
@@ -1019,6 +1045,7 @@ function openDailyReportModal(reportId = null, personId = null) {
 function closeDailyReportModal() {
   dailyReportModalOpen = false;
   dailyReportEditId = null;
+  dailyReportPresetPersonId = null;
   render();
 }
 
@@ -1057,6 +1084,7 @@ function saveDailyReportFromForm() {
   dailyReportDate = reportDate;
   dailyReportModalOpen = false;
   dailyReportEditId = null;
+  dailyReportPresetPersonId = null;
   currentPage = 'reports';
   render();
 }
@@ -1107,7 +1135,7 @@ function renderNotifications() {
     if (n.actionType === 'approval') return `<button class="text-button" data-approval="${n.changeRequestId}" data-notif-read="${n.id}">Examiner →</button>`;
     if (n.actionType === 'edit_task') return `<button class="text-button" data-edit-task="${n.taskId}" data-notif-read="${n.id}">Ouvrir la tâche →</button>`;
     if (n.actionType === 'open_project') return `<button class="text-button" data-open-project="${n.projectId}" data-notif-read="${n.id}">Ouvrir le projet →</button>`;
-    if (n.actionType === 'retry') return `<button class="text-button" data-resolve="${n.id}">Réessayer →</button>`;
+    if (n.actionType === 'retry') return `<button class="text-button" data-retry-notif="${n.id}">Réessayer (démo) →</button>`;
     return `<button class="text-button" data-notif-read="${n.id}">Marquer lu</button>`;
   };
   return `<div class="drawer-backdrop" id="drawerBackdrop"></div><aside class="notification-drawer">
@@ -1351,6 +1379,18 @@ function resolveNotification(id) {
   n.readAt = n.readAt || new Date().toISOString();
   n.resolvedAt = new Date().toISOString();
   persist(TAGS.NOTIF_RESOLVE, 'Notification résolue', { id });
+  render();
+}
+
+function retryNotification(id) {
+  const n = state.notifications.find(x => x.id === id);
+  if (!n) return;
+  n.read = true;
+  n.resolved = true;
+  n.readAt = n.readAt || new Date().toISOString();
+  n.resolvedAt = new Date().toISOString();
+  addActivity({ actor:'Pilotage', projectId:n.projectId || null, text:`Nouvel essai lancé (démo) : ${n.title}`, internalTag:TAGS.NOTIF_RETRY });
+  persist(TAGS.NOTIF_RETRY, 'Nouvel essai de notification technique simulé', { id, type:n.type, groupKey:n.groupKey || null });
   render();
 }
 
@@ -1867,6 +1907,7 @@ function bindEvents() {
     trace(TAGS.TEAM_PICKER, 'Sélection responsable', { target, userId:el.dataset.teamValue });
   }));
   document.querySelectorAll('[data-resolve]').forEach(el => el.addEventListener('click', () => resolveNotification(el.dataset.resolve)));
+  document.querySelectorAll('[data-retry-notif]').forEach(el => el.addEventListener('click', () => retryNotification(el.dataset.retryNotif)));
   document.querySelectorAll('[data-notif-read]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); markNotificationRead(el.dataset.notifRead); }));
   document.querySelectorAll('[data-approval]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openApproval(el.dataset.approval); }));
   document.querySelectorAll('[data-open-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const id=el.dataset.openProject; const notifId=el.dataset.notifRead; if(notifId) markNotificationRead(notifId, false); selectedProjectId=id; currentPage='projects'; notificationOpen=false; render(); }));
@@ -2000,6 +2041,7 @@ function bindEvents() {
     dailyReportEditId = null;
     dailyReportDate = '2026-09-17';
     dailyReportPersonFilter = 'all';
+    dailyReportPresetPersonId = null;
     mobilePlanningBucket = 'this_month';
     render();
   });

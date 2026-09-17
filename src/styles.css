@@ -53,7 +53,7 @@ button { cursor: pointer; }
 .icon-btn { width: 40px; height: 40px; border: 0; background: transparent; border-radius: 8px; display: grid; place-items: center; color: #334155; font-size: 20px; position: relative; }
 .icon-btn:hover { background: #f1f5f9; }
 .notif-btn b { position: absolute; top: 3px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 10px; background: var(--red); color: white; font-size: 10px; display: grid; place-items: center; }
-.avatar { border: 0; width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #dbeafe, #ccfbf1); color: #1e40af; box-shadow: inset 0 0 0 1px #bfdbfe; font-size: 12px; font-weight: 700; margin-left: 4px; }
+.avatar { border: 0; width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #dbeafe, #ccfbf1); color: #1e40af; box-shadow: inset 0 0 0 1px #bfdbfe; font-size: 12px; font-weight: 700; margin-left: 4px; display:grid; place-items:center; flex:0 0 auto; }
 .mobile-brand { display: none; }
 .content { max-width: 1400px; margin: 0 auto; padding: 32px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 30px; }
@@ -935,4 +935,21 @@ button { cursor: pointer; }
   .report-source-row { align-items:flex-start; flex-direction:column; }
   .report-source-actions { width:100%; flex-wrap:wrap; }
   .report-source-actions .primary-btn,.report-source-actions .secondary-btn { flex:1; }
+}
+
+
+/* PILOT-UI-036..038 — V10 contrôle humain final avant Supabase. */
+@media (max-width: 767px) {
+  .page-header:has(.report-header-actions) { flex-direction: column; align-items: stretch; gap: 12px; }
+  .report-header-actions { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .report-header-actions .primary-btn, .report-header-actions .secondary-btn { width: 100%; min-width: 0; height: 38px; padding: 0 8px; white-space: nowrap; font-size: 10px; }
+  .task-row { flex-wrap: wrap; gap: 8px 10px; }
+  .task-row .checkbox { align-self: flex-start; margin-top: 4px; }
+  .task-row .task-main { flex: 1 1 calc(100% - 40px); min-width: 0; }
+  .task-row > .badge { order: 4; margin-left: 29px; }
+  .task-row .quick-status-btn { order: 5; margin-left: 0; }
+  .task-row .defer-btn { order: 6; margin-left: 0; }
+}
+@media (max-width: 410px) {
+  .report-header-actions { grid-template-columns: 1fr; }
 }
