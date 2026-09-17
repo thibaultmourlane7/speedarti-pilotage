@@ -30,9 +30,14 @@ let activitySearch = '';
 let archiveModalProjectId = null;
 let deferTaskId = null;
 let teamWorkloadOpen = false;
+let dailyReportModalOpen = false;
+let dailyReportEditId = null;
+let dailyReportDate = '2026-09-17';
+let dailyReportPersonFilter = 'all';
 
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
+state.dailyReports = Array.isArray(state.dailyReports) ? state.dailyReports : [];
 const DEMO_NOW = new Date('2026-09-17T13:45:00+02:00');
 
 const app = document.querySelector('#app');
@@ -43,7 +48,8 @@ const navItems = [
   ['projects', 'Projets', '▦'],
   ['calendar', 'Agenda', '□'],
   ['documents', 'Documents', '▤'],
-  ['activity', 'Activité', '≋']
+  ['activity', 'Activité', '≋'],
+  ['reports', 'Comptes rendus', '☷']
 ];
 
 const statusLabels = {
@@ -55,20 +61,58 @@ const planningLabels = {
   backlog: 'À organiser', this_week: 'Cette semaine', this_month: 'Ce mois', next_3_months: '1 à 3 mois', later: 'Plus tard'
 };
 
-const aiSourceLabels = {
-  chatgpt_thibault: 'ChatGPT · Thibault',
-  claude_anne_sophie: 'Claude · Anne-Sophie',
-  chatgpt_guillaume: 'ChatGPT · Guillaume'
-};
+const DEFAULT_AI_AGENTS = Object.freeze([
+  { id:'chatgpt_thibault', name:'ChatGPT', provider:'OpenAI', personId:'u-thibault', category:'Généraliste', active:true },
+  { id:'claude_anne_sophie', name:'Claude', provider:'Anthropic', personId:'u-anne', category:'Développement', active:true },
+  { id:'chatgpt_anne_sophie', name:'ChatGPT', provider:'OpenAI', personId:'u-anne', category:'Généraliste', active:true },
+  { id:'chatgpt_guillaume', name:'ChatGPT', provider:'OpenAI', personId:'u-guillaume', category:'Généraliste', active:true },
+  { id:'marketing_guillaume_future', name:'IA marketing', provider:'À connecter', personId:'u-guillaume', category:'Marketing', active:false }
+]);
+
+function ensureAiAgents() {
+  const existing = Array.isArray(state.aiAgents) ? state.aiAgents : [];
+  const byId = new Map(existing.map(agent => [agent.id, agent]));
+  let changed = !Array.isArray(state.aiAgents);
+  DEFAULT_AI_AGENTS.forEach(defaultAgent => {
+    if (!byId.has(defaultAgent.id)) {
+      existing.push({ ...defaultAgent });
+      changed = true;
+    }
+  });
+  state.aiAgents = existing;
+  if (changed) trace(TAGS.AI_AGENT_REGISTRY, 'Registre multi-IA initialisé / complété', { count:state.aiAgents.length });
+  return state.aiAgents;
+}
+
+function aiAgent(source) {
+  return ensureAiAgents().find(agent => agent.id === source) || null;
+}
+
+function activeAiAgents() {
+  return ensureAiAgents().filter(agent => agent.active !== false);
+}
+
+function aiAgentsForPerson(personId, includeInactive = false) {
+  return ensureAiAgents().filter(agent => agent.personId === personId && (includeInactive || agent.active !== false));
+}
+
+function aiAgentLabel(source) {
+  const agent = aiAgent(source);
+  if (!agent) return source || 'IA';
+  return `${agent.name} · ${teamName(agent.personId)}`;
+}
 
 function aiSourceActor(source) {
-  if (source === 'claude_anne_sophie') return 'Anne-Sophie via Claude';
-  if (source === 'chatgpt_guillaume') return 'Guillaume via ChatGPT';
-  return 'Thibault via ChatGPT';
+  const agent = aiAgent(source);
+  return agent ? `${teamName(agent.personId)} via ${agent.name}` : 'IA';
 }
 
 function aiSourceType(source) {
-  return source.startsWith('claude') ? 'claude' : 'chatgpt';
+  const agent = aiAgent(source);
+  const value = `${agent?.provider || ''} ${agent?.name || source || ''}`.toLowerCase();
+  if (value.includes('anthropic') || value.includes('claude')) return 'claude';
+  if (value.includes('openai') || value.includes('chatgpt')) return 'chatgpt';
+  return 'other_ai';
 }
 
 function esc(value = '') {
@@ -93,6 +137,11 @@ function ensureRuntimeState() {
   if (!Array.isArray(state.changeRequests)) state.changeRequests = [];
   if (!Array.isArray(state.notifications)) state.notifications = [];
   if (!Array.isArray(state.aiRequests)) state.aiRequests = [];
+  if (!Array.isArray(state.dailyReports)) state.dailyReports = [];
+  ensureAiAgents();
+  state.dailyReports.forEach(report => {
+    if (report.source === 'ai' && !report.sourceAgent) report.sourceAgent = aiAgentsForPerson(report.personId)[0]?.id || null;
+  });
   state.projects.forEach(p => { if (typeof p.archived !== 'boolean') p.archived = false; });
   state.notifications = state.notifications.filter(n => !(n.type === 'approval_required' && !n.changeRequestId && !n.projectId));
   state.notifications.forEach(n => {
@@ -240,6 +289,7 @@ function layout(content) {
       ${archiveModalProjectId ? renderArchiveModal(archiveModalProjectId) : ''}
       ${deferTaskId ? renderDeferModal(deferTaskId) : ''}
       ${teamWorkloadOpen ? renderTeamWorkloadModal() : ''}
+      ${dailyReportModalOpen ? renderDailyReportModal() : ''}
     </div>
   `;
 }
@@ -269,6 +319,137 @@ function pendingApprovals() {
   return state.changeRequests.filter(r => r.status === 'pending' && !project(r.projectId)?.archived);
 }
 
+
+function actorMatchesPerson(actor, personId) {
+  const value = String(actor || '').toLowerCase();
+  if (personId === 'u-anne') return value.includes('anne-sophie');
+  if (personId === 'u-guillaume') return value.includes('guillaume');
+  return value.includes('thibault');
+}
+
+function dailyReportsForDate(reportDate) {
+  ensureRuntimeState();
+  return state.dailyReports.filter(r => r.reportDate === reportDate);
+}
+
+function dailyReportsForPerson(personId, reportDate) {
+  return dailyReportsForDate(reportDate).filter(r => r.personId === personId);
+}
+
+function manualDailyReportForPerson(personId, reportDate) {
+  return dailyReportsForPerson(personId, reportDate).find(r => r.source === 'manual') || null;
+}
+
+function splitReportLines(value = '') {
+  return String(value).split(/\n+/).map(x => x.trim()).filter(Boolean).slice(0, 12);
+}
+
+function buildAutomaticDailyReport(member, reportDate, agent = null) {
+  const activities = state.activity
+    .filter(a => dateKey(a.at) === reportDate && actorMatchesPerson(a.actor, member.id))
+    .slice(0, 8);
+  const completedTasks = state.tasks.filter(t =>
+    t.assignedTo === member.id && t.status === 'completed' &&
+    (dateKey(t.completedAt) === reportDate || (!t.completedAt && t.scheduledFor === reportDate))
+  );
+  const achievements = [...new Set([
+    ...completedTasks.map(t => `Tâche terminée : ${t.title}`),
+    ...activities.map(a => a.text)
+  ])].slice(0, 6);
+  const blockers = state.projects
+    .filter(p => !p.archived && p.owner === member.id && p.blocker)
+    .map(p => `${p.name} : ${p.blocker}`)
+    .slice(0, 4);
+  const nextSteps = state.projects
+    .filter(p => !p.archived && p.owner === member.id && p.status !== 'completed' && p.nextAction)
+    .map(p => `${p.name} : ${p.nextAction}`)
+    .slice(0, 4);
+  const projectIds = [...new Set([
+    ...activities.map(a => a.projectId).filter(Boolean),
+    ...completedTasks.map(t => t.projectId).filter(Boolean),
+    ...state.projects.filter(p => !p.archived && p.owner === member.id).map(p => p.id)
+  ])].slice(0, 8);
+  const sourceName = agent?.name || 'IA';
+  const summary = achievements.length
+    ? `${sourceName} a synthétisé ${achievements.length} avancée${achievements.length > 1 ? 's' : ''} aujourd’hui${blockers.length ? `, avec ${blockers.length} blocage${blockers.length > 1 ? 's' : ''} à suivre` : ''}.`
+    : `${sourceName} n’a détecté aucune réalisation enregistrée automatiquement pour ${member.name} aujourd’hui.`;
+  return { summary, achievements, blockers, nextSteps, projectIds };
+}
+
+function consolidatePersonDailyReports(personId, reportDate) {
+  const reports = dailyReportsForPerson(personId, reportDate);
+  const unique = values => [...new Set(values.filter(Boolean))];
+  const achievements = unique(reports.flatMap(r => r.achievements || []));
+  const blockers = unique(reports.flatMap(r => r.blockers || []));
+  const nextSteps = unique(reports.flatMap(r => r.nextSteps || []));
+  const projectIds = unique(reports.flatMap(r => r.projectIds || []));
+  const validatedCount = reports.filter(r => r.validatedAt).length;
+  return {
+    reports, achievements, blockers, nextSteps, projectIds,
+    validatedCount,
+    allValidated: reports.length > 0 && validatedCount === reports.length,
+    summary: reports.length > 1
+      ? `${reports.length} sources consolidées · ${achievements.length} réalisation${achievements.length > 1 ? 's' : ''}${blockers.length ? ` · ${blockers.length} blocage${blockers.length > 1 ? 's' : ''}` : ''}.`
+      : (reports[0]?.summary || '')
+  };
+}
+
+function collectAutomaticDailyReports(reportDate = dailyReportDate) {
+  ensureRuntimeState();
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  activeAiAgents().forEach(agent => {
+    const member = state.team.find(m => m.id === agent.personId);
+    if (!member) return;
+    const existing = dailyReportsForPerson(member.id, reportDate).find(r => r.source === 'ai' && r.sourceAgent === agent.id);
+    if (existing?.validatedAt) { skipped += 1; return; }
+    const generated = buildAutomaticDailyReport(member, reportDate, agent);
+    if (existing) {
+      Object.assign(existing, generated, {
+        source:'ai', sourceAgent:agent.id, updatedAt:new Date().toISOString()
+      });
+      updated += 1;
+    } else {
+      state.dailyReports.unshift({
+        id:crypto.randomUUID(), reportDate, personId:member.id,
+        source:'ai', sourceAgent:agent.id, status:'draft',
+        ...generated, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), validatedAt:null
+      });
+      created += 1;
+    }
+  });
+  addActivity({ actor:'Pilotage', projectId:null, text:`Collecte multi-IA du ${formatDate(reportDate)} : ${created} créé(s), ${updated} actualisé(s), ${skipped} conservé(s)`, internalTag:TAGS.REPORT_MULTI_SOURCE });
+  trace(TAGS.REPORT_MULTI_SOURCE, 'Collecte multi-source terminée', { reportDate, activeAgents:activeAiAgents().length, created, updated, skipped });
+  persist(TAGS.REPORT_AUTO_COLLECT, 'Collecte quotidienne multi-IA simulée', { reportDate, created, updated, skipped, activeAgents:activeAiAgents().map(a => a.id) });
+  currentPage = 'reports';
+  render();
+}
+
+function teamDailySummary(reportDate) {
+  const reports = dailyReportsForDate(reportDate);
+  const unique = values => [...new Set(values.filter(Boolean))];
+  const achievements = unique(reports.flatMap(r => r.achievements || []));
+  const blockers = unique(reports.flatMap(r => r.blockers || []));
+  const nextSteps = unique(reports.flatMap(r => r.nextSteps || []));
+  const received = new Set(reports.map(r => r.personId)).size;
+  const sources = reports.length;
+  const validated = reports.filter(r => r.validatedAt).length;
+  return {
+    received,
+    expected: state.team.length,
+    sources,
+    expectedSources: activeAiAgents().length,
+    validated,
+    achievements: achievements.length,
+    blockers: blockers.length,
+    nextSteps: nextSteps.length,
+    text: received
+      ? `${received}/${state.team.length} personnes couvertes · ${sources} source${sources > 1 ? 's' : ''} reçue${sources > 1 ? 's' : ''} · ${achievements.length} réalisation${achievements.length > 1 ? 's' : ''} · ${blockers.length} blocage${blockers.length > 1 ? 's' : ''}.`
+      : 'Aucun compte rendu reçu pour cette journée.'
+  };
+}
+
 function renderToday() {
   const today = '2026-09-17'; // date fixe de la démo pour rester cohérente avec les données mockées
   const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.id && t.scheduledFor === today && t.status !== 'completed' && (!t.projectId || !project(t.projectId)?.archived));
@@ -279,12 +460,17 @@ function renderToday() {
 
   const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW && (!t.projectId || !project(t.projectId)?.archived)).length;
   const activeBlockers = state.projects.filter(p => !p.archived && p.blocker && p.status !== 'completed').length;
+  const reportSummary = teamDailySummary(today);
   return pageHeader('Bonjour Thibault', 'Jeudi 17 septembre') + `
     <section class="pilot-pulse">
       <button class="pulse-card pulse-red" data-notif-open-filter="warning"><span>Retards</span><strong>${overdue}</strong><small>échéance${overdue > 1 ? 's' : ''} dépassée${overdue > 1 ? 's' : ''}</small></button>
       <button class="pulse-card pulse-orange" data-notif-open-filter="warning"><span>Blocages</span><strong>${activeBlockers}</strong><small>projet${activeBlockers > 1 ? 's' : ''} à surveiller</small></button>
       <button class="pulse-card pulse-violet" data-notif-open-filter="action"><span>Validations</span><strong>${approvals}</strong><small>décision${approvals > 1 ? 's' : ''} attendue${approvals > 1 ? 's' : ''}</small></button>
       <button class="pulse-card pulse-blue" data-page="planning"><span>À planifier</span><strong>${toPlan}</strong><small>nouvel élément</small></button>
+    </section>
+    <section class="section daily-report-today">
+      <div class="section-title"><h2>Compte rendu du jour</h2><button class="text-button" data-page="reports">Voir les comptes rendus →</button></div>
+      <button class="daily-report-summary-card" data-page="reports"><div><span class="report-progress-ring">${reportSummary.received}/${reportSummary.expected}</span><div><strong>${reportSummary.text}</strong><small>${reportSummary.validated}/${reportSummary.sources || 0} source${reportSummary.sources > 1 ? 's' : ''} validée${reportSummary.sources > 1 ? 's' : ''} · multi-IA + manuel</small></div></div><span>Ouvrir →</span></button>
     </section>
     <section class="section">
       <div class="section-title"><h2>Agenda du jour</h2><button class="text-button" data-page="calendar">Voir l’agenda →</button></div>
@@ -499,8 +685,157 @@ function renderActivity() {
     <section class="section"><div class="activity-list">${visible.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité dans ce filtre.</div>'}</div></section>`;
 }
 
+
+function reportSourceLabel(report) {
+  if (report.source === 'manual') return 'Ajout manuel';
+  return aiAgentLabel(report.sourceAgent);
+}
+
+function renderReportList(items, emptyText) {
+  if (!items?.length) return `<p class="report-empty-line">${esc(emptyText)}</p>`;
+  return `<ul>${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
+}
+
+function renderDailyReportCard(member, reports) {
+  const activeAgents = aiAgentsForPerson(member.id);
+  const plannedAgents = aiAgentsForPerson(member.id, true).filter(a => a.active === false);
+  if (!reports.length) return `<article class="daily-report-card report-missing">
+    <header><div class="report-person"><span>${personInitials(member.name)}</span><div><strong>${esc(member.name)}</strong><small>${esc(member.role)} · ${activeAgents.length} IA active${activeAgents.length > 1 ? 's' : ''}</small></div></div><span class="report-status missing">Manquant</span></header>
+    <div class="report-agent-chips">${activeAgents.map(a => `<span>${esc(a.name)}</span>`).join('')}${plannedAgents.map(a => `<span class="planned">${esc(a.name)} · prévu</span>`).join('')}</div>
+    <div class="report-missing-body"><strong>Aucun compte rendu pour cette journée.</strong><small>Chaque IA active pourra envoyer son propre mini compte rendu. Pilotage les consolidera par personne.</small></div>
+    <footer><button class="secondary-btn" data-report-new-person="${member.id}">+ Ajouter manuellement</button></footer>
+  </article>`;
+  const consolidated = consolidatePersonDailyReports(member.id, dailyReportDate);
+  const projectNames = consolidated.projectIds.map(id => project(id)?.name).filter(Boolean);
+  return `<article class="daily-report-card ${consolidated.allValidated ? 'report-validated' : ''}">
+    <header><div class="report-person"><span>${personInitials(member.name)}</span><div><strong>${esc(member.name)}</strong><small>${esc(member.role)} · ${reports.length} source${reports.length > 1 ? 's' : ''}</small></div></div><span class="report-status ${consolidated.allValidated ? 'validated' : 'draft'}">${consolidated.allValidated ? 'Tout validé' : `${consolidated.validatedCount}/${reports.length} validé${reports.length > 1 ? 's' : ''}`}</span></header>
+    <div class="report-summary"><small>RÉSUMÉ CONSOLIDÉ</small><strong>${esc(consolidated.summary || 'Sans résumé')}</strong></div>
+    <div class="report-columns">
+      <section><h3>Réalisé</h3>${renderReportList(consolidated.achievements, 'Aucune réalisation renseignée.')}</section>
+      <section><h3>Blocages</h3>${renderReportList(consolidated.blockers, 'Aucun blocage signalé.')}</section>
+      <section><h3>Suite</h3>${renderReportList(consolidated.nextSteps, 'Aucune prochaine étape renseignée.')}</section>
+    </div>
+    <div class="report-source-list">
+      ${reports.map(report => `<div class="report-source-row"><div class="report-source-meta"><span class="source-badge ${report.source === 'manual' ? 'manual' : 'ai'}">${esc(reportSourceLabel(report))}</span><p>${esc(report.summary || 'Sans résumé')}</p></div><div class="report-source-actions"><span class="report-status ${report.validatedAt ? 'validated' : 'draft'}">${report.validatedAt ? 'Validé' : 'À relire'}</span><button class="secondary-btn" data-edit-report="${report.id}">Modifier</button>${report.validatedAt ? '' : `<button class="primary-btn" data-validate-report="${report.id}">Valider</button>`}</div></div>`).join('')}
+    </div>
+    ${projectNames.length ? `<div class="report-projects">${projectNames.map(name => `<span>${esc(name)}</span>`).join('')}</div>` : ''}
+    <footer><small>${reports.length} compte${reports.length > 1 ? 's' : ''} rendu${reports.length > 1 ? 's' : ''} consolidé${reports.length > 1 ? 's' : ''}</small><div><button class="secondary-btn" data-report-new-person="${member.id}">+ Complément manuel</button></div></footer>
+  </article>`;
+}
+
+function renderDailyReports() {
+  const summary = teamDailySummary(dailyReportDate);
+  const members = dailyReportPersonFilter === 'all' ? state.team : state.team.filter(m => m.id === dailyReportPersonFilter);
+  return pageHeader('Comptes rendus', 'Plusieurs IA peuvent contribuer pour une même personne ; Pilotage consolide ensuite la journée', '<div class="header-actions"><button class="secondary-btn" id="collectDailyReports">✦ Simuler collecte multi-IA</button><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
+    <section class="report-automation-banner"><div><span>✦</span><div><strong>Automatisation multi-IA prévue</strong><small>Une personne peut utiliser plusieurs IA. Chaque agent envoie uniquement son mini compte rendu autorisé ; Pilotage les regroupe ensuite par personne et par journée, sans que les IA lisent les conversations des autres.</small></div></div></section>
+    <div class="toolbar report-toolbar"><label class="report-date-field"><span>Journée</span><input id="reportDateFilter" type="date" value="${dailyReportDate}" /></label><select id="reportPersonFilter"><option value="all">Toute l’équipe</option>${state.team.map(m => `<option value="${m.id}" ${dailyReportPersonFilter === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
+    <section class="team-report-summary">
+      <div class="team-report-main"><span class="report-progress-ring large">${summary.received}/${summary.expected}</span><div><small>SYNTHÈSE ÉQUIPE</small><h2>${esc(summary.text)}</h2></div></div>
+      <div class="team-report-stats"><span><b>${summary.achievements}</b><small>Réalisations</small></span><span class="${summary.blockers ? 'stat-warning' : ''}"><b>${summary.blockers}</b><small>Blocages</small></span><span><b>${summary.nextSteps}</b><small>Suites</small></span><span><b>${summary.sources}</b><small>Sources reçues</small></span><span class="${summary.validated === summary.sources && summary.sources ? 'stat-ok' : ''}"><b>${summary.validated}</b><small>Sources validées</small></span></div>
+    </section>
+    <section class="daily-report-grid">${members.map(member => renderDailyReportCard(member, dailyReportsForPerson(member.id, dailyReportDate))).join('')}</section>`;
+}
+
+function renderDailyReportModal() {
+  const report = dailyReportEditId ? state.dailyReports.find(r => r.id === dailyReportEditId) : null;
+  const selectedPerson = report?.personId || state.currentUser.id;
+  const selectedDate = report?.reportDate || dailyReportDate;
+  const achievements = (report?.achievements || []).join('\n');
+  const blockers = (report?.blockers || []).join('\n');
+  const nextSteps = (report?.nextSteps || []).join('\n');
+  const mainProject = report?.projectIds?.[0] || '';
+  const aiLocked = report?.source === 'ai';
+  const personField = aiLocked
+    ? `<div class="form-field form-field-full"><span>Personne</span><div class="report-locked-source"><b>${esc(teamName(selectedPerson))}</b><small>Source liée à ${esc(reportSourceLabel(report))}</small></div><input type="hidden" id="dailyReportPerson" value="${selectedPerson}" /></div>`
+    : `<label class="form-field form-field-full"><span>Personne</span>${teamPicker('dailyReportPerson', selectedPerson)}</label>`;
+  return `<div class="modal-backdrop" id="dailyReportBackdrop"></div><div class="modal-card report-modal" role="dialog" aria-modal="true">
+    <header><div><small>${report ? 'MODIFIER' : 'AJOUT MANUEL'}</small><h2>${report ? 'Compte rendu quotidien' : 'Ajouter un compte rendu'}</h2></div><button class="icon-btn" id="closeDailyReport">×</button></header>
+    <div class="form-grid">
+      ${personField}
+      ${report ? `<div class="form-field form-field-full"><span>Source</span><div class="report-locked-source"><b>${esc(reportSourceLabel(report))}</b><small>${report.source === 'manual' ? 'Saisie humaine' : 'Compte rendu reçu depuis un agent IA'}</small></div></div>` : ''}
+      <label class="form-field"><span>Date</span><input id="dailyReportDateInput" type="date" value="${selectedDate}" /></label>
+      <label class="form-field"><span>Projet principal (optionnel)</span><select id="dailyReportProject"><option value="">Aucun / plusieurs projets</option>${state.projects.filter(p => !p.archived).map(p => `<option value="${p.id}" ${mainProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Résumé</span><textarea id="dailyReportSummary" rows="3" placeholder="Résumé très court de la journée…">${esc(report?.summary || '')}</textarea></label>
+      <label class="form-field form-field-full"><span>Ce qui a été réalisé — 1 ligne par élément</span><textarea id="dailyReportAchievements" rows="4" placeholder="Ex. Module de planification terminé">${esc(achievements)}</textarea></label>
+      <label class="form-field form-field-full"><span>Blocages — 1 ligne par élément</span><textarea id="dailyReportBlockers" rows="3" placeholder="Laisser vide si aucun blocage">${esc(blockers)}</textarea></label>
+      <label class="form-field form-field-full"><span>Prochaines étapes — 1 ligne par élément</span><textarea id="dailyReportNextSteps" rows="3" placeholder="Ex. Tester demain matin">${esc(nextSteps)}</textarea></label>
+    </div>
+    <footer><button class="secondary-btn" id="cancelDailyReport">Annuler</button><button class="primary-btn" id="saveDailyReport">${report ? 'Enregistrer' : 'Ajouter le compte rendu'}</button></footer>
+  </div>`;
+}
+
+function openDailyReportModal(reportId = null, personId = null) {
+  dailyReportEditId = reportId;
+  dailyReportModalOpen = true;
+  if (!reportId && personId) {
+    const existing = manualDailyReportForPerson(personId, dailyReportDate);
+    if (existing) dailyReportEditId = existing.id;
+  }
+  notificationOpen = false;
+  quickActionOpen = false;
+  trace(TAGS.REPORT_MODAL, 'Ouverture compte rendu', { reportId:dailyReportEditId, personId });
+  render();
+}
+
+function closeDailyReportModal() {
+  dailyReportModalOpen = false;
+  dailyReportEditId = null;
+  render();
+}
+
+function saveDailyReportFromForm() {
+  const personId = document.querySelector('#dailyReportPerson')?.value || state.currentUser.id;
+  const reportDate = document.querySelector('#dailyReportDateInput')?.value || dailyReportDate;
+  const summaryInput = document.querySelector('#dailyReportSummary');
+  const summary = summaryInput?.value.trim() || '';
+  if (!summary) { summaryInput?.classList.add('field-error'); summaryInput?.focus(); return; }
+  const projectId = document.querySelector('#dailyReportProject')?.value || null;
+  const payload = {
+    reportDate, personId, summary,
+    achievements: splitReportLines(document.querySelector('#dailyReportAchievements')?.value || ''),
+    blockers: splitReportLines(document.querySelector('#dailyReportBlockers')?.value || ''),
+    nextSteps: splitReportLines(document.querySelector('#dailyReportNextSteps')?.value || ''),
+    projectIds: projectId ? [projectId] : [], updatedAt:new Date().toISOString()
+  };
+  let report = dailyReportEditId ? state.dailyReports.find(r => r.id === dailyReportEditId) : manualDailyReportForPerson(personId, reportDate);
+  if (report) {
+    const changedPerson = report.personId !== personId || report.reportDate !== reportDate;
+    if (changedPerson && report.source === 'manual') {
+      const duplicate = state.dailyReports.find(r => r.id !== report.id && r.source === 'manual' && r.personId === personId && r.reportDate === reportDate);
+      if (duplicate) { window.alert('Un complément manuel existe déjà pour cette personne et cette date. Modifie celui-ci directement.'); return; }
+    }
+    Object.assign(report, payload);
+    report.source = report.source || 'manual';
+    report.status = report.validatedAt ? 'validated' : 'draft';
+    addActivity({ actor:teamName(personId), projectId, text:`Compte rendu (${reportSourceLabel(report)}) du ${formatDate(reportDate)} modifié`, internalTag:TAGS.REPORT_EDIT });
+    persist(TAGS.REPORT_EDIT, 'Compte rendu modifié', { reportId:report.id, personId, reportDate, sourceAgent:report.sourceAgent || null });
+  } else {
+    report = { id:crypto.randomUUID(), ...payload, source:'manual', sourceAgent:null, status:'draft', createdAt:new Date().toISOString(), validatedAt:null };
+    state.dailyReports.unshift(report);
+    addActivity({ actor:teamName(personId), projectId, text:`Complément manuel du ${formatDate(reportDate)} ajouté`, internalTag:TAGS.REPORT_MANUAL_CREATE });
+    persist(TAGS.REPORT_MANUAL_CREATE, 'Compte rendu manuel créé', { reportId:report.id, personId, reportDate });
+  }
+  dailyReportDate = reportDate;
+  dailyReportModalOpen = false;
+  dailyReportEditId = null;
+  currentPage = 'reports';
+  render();
+}
+
+function validateDailyReport(reportId) {
+  const report = state.dailyReports.find(r => r.id === reportId);
+  if (!report || report.validatedAt) return;
+  report.validatedAt = new Date().toISOString();
+  report.validatedBy = state.currentUser.id;
+  report.status = 'validated';
+  report.updatedAt = new Date().toISOString();
+  addActivity({ actor:'Thibault', projectId:report.projectIds?.[0] || null, text:`Compte rendu de ${teamName(report.personId)} du ${formatDate(report.reportDate)} validé`, internalTag:TAGS.REPORT_VALIDATE });
+  persist(TAGS.REPORT_VALIDATE, 'Compte rendu validé', { reportId, personId:report.personId, reportDate:report.reportDate });
+  render();
+}
+
 function renderMore() {
-  return pageHeader('Plus', 'Outils complémentaires de la démo') + `<div class="menu-list"><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button><button id="exportDemo">Sauvegarder la démo <span>↓</span></button><button id="importDemo">Restaurer une sauvegarde <span>↑</span></button></div>`;
+  return pageHeader('Plus', 'Outils complémentaires de la démo') + `<div class="menu-list"><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button><button id="exportDemo">Sauvegarder la démo <span>↓</span></button><button id="importDemo">Restaurer une sauvegarde <span>↑</span></button></div>`;
 }
 
 function renderQuickActionModal() {
@@ -512,6 +847,7 @@ function renderQuickActionModal() {
       <button data-quick-action="task"><span>✓</span><div><strong>Nouvelle tâche</strong><small>Créer et assigner rapidement</small></div></button>
       <button data-quick-action="project"><span>▦</span><div><strong>Nouveau projet</strong><small>Créer un projet complet</small></div></button>
       <button data-quick-action="document"><span>▤</span><div><strong>Lier un document</strong><small>Référence Google Drive</small></div></button>
+      <button data-quick-action="report"><span>☷</span><div><strong>Compte rendu manuel</strong><small>Ajouter le mini bilan du jour</small></div></button>
       <button data-quick-action="planning" ${unplanned ? '' : 'disabled'}><span>↔</span><div><strong>Planifier le prochain élément</strong><small>${unplanned ? esc(unplanned.title) : 'Rien à planifier'}</small></div></button>
       <button data-quick-action="approval" ${approval ? '' : 'disabled'}><span>!</span><div><strong>Traiter une validation</strong><small>${approval ? esc(project(approval.projectId)?.name || 'Projet') : 'Aucune validation'}</small></div></button>
       <button data-quick-action="notifications"><span>♢</span><div><strong>Centre de notifications</strong><small>${unreadNotifications()} non lue${unreadNotifications() > 1 ? 's' : ''}</small></div></button>
@@ -628,7 +964,7 @@ function renderAiSimulationModal() {
         <option value="complete_project">Projet proposé comme terminé → validation Thibault</option>
         <option value="technical_error">Erreur technique → notification regroupée</option><option value="duplicate_request">Rejouer une requête IA → doublon ignoré</option>
       </select></label>
-      <label class="form-field form-field-full"><span>Source</span><select id="aiSource">${Object.entries(aiSourceLabels).map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Source</span><select id="aiSource">${activeAiAgents().map(agent => `<option value="${agent.id}">${esc(aiAgentLabel(agent.id))}</option>`).join('')}</select></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.filter(p => !p.archived).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
       <label class="form-field form-field-full" data-ai-section="detail"><span id="aiDetailLabel">Nouvel élément détecté</span><input id="aiTaskTitle" type="text" value="Ajouter le contrôle automatique des marges" maxlength="180" /></label>
       <label class="form-field" data-ai-section="progress"><span>Nouvelle progression</span><input id="aiProgress" type="number" min="0" max="100" step="5" value="80" /></label>
@@ -710,7 +1046,7 @@ function renderTeamWorkloadModal() {
 }
 
 function renderSearchOverlay() {
-  return `<div class="modal-backdrop" id="searchBackdrop"></div><div class="search-modal"><input id="globalSearchInput" autofocus placeholder="Rechercher dans SpeedArti Pilotage…" /><div id="searchResults"><p class="search-hint">Projet, tâche, document ou activité.</p></div></div>`;
+  return `<div class="modal-backdrop" id="searchBackdrop"></div><div class="search-modal"><input id="globalSearchInput" autofocus placeholder="Rechercher dans SpeedArti Pilotage…" /><div id="searchResults"><p class="search-hint">Projet, tâche, document, compte rendu ou activité.</p></div></div>`;
 }
 
 function render() {
@@ -723,6 +1059,7 @@ function render() {
     case 'calendar': content = renderCalendar(); break;
     case 'documents': content = renderDocuments(); break;
     case 'activity': content = renderActivity(); break;
+    case 'reports': content = renderDailyReports(); break;
     case 'more': content = renderMore(); break;
     default: content = renderToday();
   }
@@ -1039,7 +1376,7 @@ function syncAiSimulationFields() {
 
 function simulateAiIncoming() {
   const mode = document.querySelector('#aiMode')?.value || 'new_task';
-  const source = document.querySelector('#aiSource')?.value || 'chatgpt_thibault';
+  const source = document.querySelector('#aiSource')?.value || activeAiAgents()[0]?.id || 'chatgpt_thibault';
   if (mode === 'duplicate_request') {
     ensureRuntimeState();
     const requestId = state.aiRequests.at(-1)?.requestId || 'demo-request-duplicate-001';
@@ -1157,6 +1494,7 @@ function runQuickAction(action) {
   if (action === 'task') return openTaskModal();
   if (action === 'project') return openProjectModal();
   if (action === 'document') return openDocumentModal();
+  if (action === 'report') return openDailyReportModal();
   if (action === 'planning' && unplanned) return openPlanning(unplanned.id);
   if (action === 'approval' && approval) return openApproval(approval.id);
   if (action === 'notifications') { notificationOpen=true; return render(); }
@@ -1164,7 +1502,7 @@ function runQuickAction(action) {
 }
 
 function exportDemoBackup() {
-  const payload = { version:'speedarti-pilotage-demo-v7', exportedAt:new Date().toISOString(), state };
+  const payload = { version:'speedarti-pilotage-demo-v9', exportedAt:new Date().toISOString(), state };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href=url; a.download='speedarti-pilotage-sauvegarde.json'; a.click();
@@ -1251,6 +1589,17 @@ function bindEvents() {
   document.querySelector('#closeQuickAction')?.addEventListener('click', closeQuickAction);
   document.querySelector('#quickActionBackdrop')?.addEventListener('click', closeQuickAction);
   document.querySelectorAll('[data-quick-action]').forEach(el => el.addEventListener('click', () => runQuickAction(el.dataset.quickAction)));
+  document.querySelectorAll('[data-action="new-report"]').forEach(el => el.addEventListener('click', () => openDailyReportModal()));
+  document.querySelector('#collectDailyReports')?.addEventListener('click', () => collectAutomaticDailyReports(dailyReportDate));
+  document.querySelector('#reportDateFilter')?.addEventListener('change', e => { dailyReportDate = e.target.value || '2026-09-17'; trace(TAGS.REPORT_FILTER, 'Changement journée comptes rendus', { reportDate:dailyReportDate }); render(); });
+  document.querySelector('#reportPersonFilter')?.addEventListener('change', e => { dailyReportPersonFilter = e.target.value || 'all'; trace(TAGS.REPORT_FILTER, 'Filtre personne comptes rendus', { personId:dailyReportPersonFilter }); render(); });
+  document.querySelectorAll('[data-edit-report]').forEach(el => el.addEventListener('click', () => openDailyReportModal(el.dataset.editReport)));
+  document.querySelectorAll('[data-validate-report]').forEach(el => el.addEventListener('click', () => validateDailyReport(el.dataset.validateReport)));
+  document.querySelectorAll('[data-report-new-person]').forEach(el => el.addEventListener('click', () => openDailyReportModal(null, el.dataset.reportNewPerson)));
+  document.querySelector('#closeDailyReport')?.addEventListener('click', closeDailyReportModal);
+  document.querySelector('#cancelDailyReport')?.addEventListener('click', closeDailyReportModal);
+  document.querySelector('#dailyReportBackdrop')?.addEventListener('click', closeDailyReportModal);
+  document.querySelector('#saveDailyReport')?.addEventListener('click', saveDailyReportFromForm);
   document.querySelector('#simulateAiBtn')?.addEventListener('click', openAiSimulation);
   document.querySelector('#closeAiSimulation')?.addEventListener('click', closeAiSimulation);
   document.querySelector('#cancelAiSimulation')?.addEventListener('click', closeAiSimulation);
@@ -1408,6 +1757,10 @@ function bindEvents() {
     archiveModalProjectId = null;
     deferTaskId = null;
     teamWorkloadOpen = false;
+    dailyReportModalOpen = false;
+    dailyReportEditId = null;
+    dailyReportDate = '2026-09-17';
+    dailyReportPersonFilter = 'all';
     mobilePlanningBucket = 'this_month';
     render();
   });
@@ -1445,12 +1798,13 @@ function updateSearch(query) {
   const q = query.trim().toLowerCase();
   const target = document.querySelector('#searchResults');
   if (!target) return;
-  if (!q) { target.innerHTML = '<p class="search-hint">Projet, tâche, document ou activité.</p>'; return; }
+  if (!q) { target.innerHTML = '<p class="search-hint">Projet, tâche, document, compte rendu ou activité.</p>'; return; }
   const results = [
     ...state.projects.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Projet', title:x.name, action:`project:${x.id}` })),
     ...state.tasks.filter(x => x.title.toLowerCase().includes(q)).map(x => ({ type:'Tâche', title:x.title, action:`task:${x.id}` })),
     ...state.documents.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Document', title:x.name, action:'documents' })),
-    ...state.activity.filter(x => `${x.actor || ''} ${x.text || ''}`.toLowerCase().includes(q)).map(x => ({ type:'Activité', title:x.text, action:'activity' }))
+    ...state.activity.filter(x => `${x.actor || ''} ${x.text || ''}`.toLowerCase().includes(q)).map(x => ({ type:'Activité', title:x.text, action:'activity' })),
+    ...state.dailyReports.filter(x => `${teamName(x.personId)} ${x.summary || ''} ${(x.achievements || []).join(' ')} ${(x.blockers || []).join(' ')}`.toLowerCase().includes(q)).map(x => ({ type:'Compte rendu', title:`${teamName(x.personId)} · ${formatDate(x.reportDate)} · ${x.summary}`, action:'reports' }))
   ].slice(0,12);
   target.innerHTML = results.length ? results.map(r => `<button class="search-result" data-search-action="${r.action}"><small>${r.type}</small><strong>${esc(r.title)}</strong></button>`).join('') : '<p class="search-hint">Aucun résultat.</p>';
   target.querySelectorAll('[data-search-action]').forEach(btn => btn.addEventListener('click', () => {
