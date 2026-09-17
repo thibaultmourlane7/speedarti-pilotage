@@ -738,3 +738,45 @@ button { cursor: pointer; }
   .approval-banner .primary-btn { width: 100%; }
   .approval-summary { grid-template-columns: 1fr; }
 }
+
+
+/* PILOT-UI-027..031 — V7 gros lot : actions rapides, équipe, activité, notifications et recherche. */
+.quick-create-btn { height: 38px; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 9px; padding: 0 12px; display:flex; align-items:center; gap:7px; font-weight:700; }
+.quick-create-btn span { font-size:18px; line-height:1; }
+.quick-create-btn:hover { background:#dbeafe; }
+.quick-status-btn { border:1px solid #cbd5e1; background:#fff; color:#334155; border-radius:7px; min-height:30px; padding:0 9px; font-size:11px; font-weight:700; white-space:nowrap; }
+.quick-status-btn:hover { border-color:#93c5fd; color:#1d4ed8; background:#eff6ff; }
+.team-row-button { width:100%; border:0; background:transparent; text-align:left; cursor:pointer; }
+.team-row-button:hover { background:#f8fbff; }
+.decisions-box { border:1px solid #ddd6fe; background:linear-gradient(180deg,#faf7ff,#fff); border-radius:12px; padding:16px; }
+.decision-list { display:grid; gap:8px; }
+.decision-row { border:1px solid #e9d5ff; background:#fff; border-radius:10px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; text-align:left; gap:12px; }
+.decision-row strong,.decision-row small { display:block; }
+.decision-row small { color:var(--muted); margin-top:3px; }
+.decision-row > span { color:#7c3aed; font-size:12px; font-weight:700; }
+.quick-action-modal { position:fixed; z-index:65; top:50%; left:50%; transform:translate(-50%,-50%); width:min(680px,92vw); background:#fff; border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
+.quick-action-modal > header { display:flex; justify-content:space-between; align-items:center; padding:18px 20px; border-bottom:1px solid var(--border); }
+.quick-action-modal header h2 { margin:3px 0 0; font-size:20px; }
+.quick-action-modal header small { color:var(--blue); font-weight:800; letter-spacing:.08em; }
+.quick-action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:18px; }
+.quick-action-grid > button { border:1px solid var(--border); background:#fff; border-radius:11px; min-height:82px; padding:14px; display:flex; gap:12px; align-items:center; text-align:left; }
+.quick-action-grid > button:hover:not(:disabled) { border-color:#93c5fd; background:#f8fbff; transform:translateY(-1px); }
+.quick-action-grid > button:disabled { opacity:.48; cursor:not-allowed; }
+.quick-action-grid > button > span { width:38px; height:38px; border-radius:10px; background:#eff6ff; color:var(--blue); display:grid; place-items:center; font-size:18px; font-weight:800; flex:0 0 auto; }
+.quick-action-grid strong,.quick-action-grid small { display:block; }
+.quick-action-grid small { color:var(--muted); margin-top:3px; line-height:1.35; }
+.notification-bulk { display:flex; justify-content:space-between; align-items:center; padding:8px 16px; border-bottom:1px solid #edf2f7; background:#fbfdff; }
+.activity-toolbar { margin-top:2px; }
+.activity-item time small { display:block; margin-top:3px; color:var(--muted-2); }
+.activity-item.activity-ai { box-shadow:inset 3px 0 0 #8b5cf6; }
+.activity-item.activity-human { box-shadow:inset 3px 0 0 #38bdf8; }
+.menu-list button { min-height:52px; }
+
+@media (max-width: 760px) {
+  .quick-create-btn b { display:none; }
+  .quick-create-btn { width:40px; padding:0; justify-content:center; }
+  .quick-action-grid { grid-template-columns:1fr; }
+  .quick-action-modal { width:min(520px,94vw); max-height:82vh; overflow:auto; }
+  .task-row .quick-status-btn { order:5; margin-left:33px; }
+  .notification-bulk { gap:10px; }
+}

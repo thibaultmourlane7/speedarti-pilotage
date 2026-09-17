@@ -24,8 +24,12 @@ let documentProjectFilter = 'all';
 let documentModalOpen = false;
 let mobilePlanningBucket = 'this_month';
 let approvalRequestId = null;
+let quickActionOpen = false;
+let activityProjectFilter = 'all';
+let activitySearch = '';
 
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
+state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
 const DEMO_NOW = new Date('2026-09-17T13:45:00+02:00');
 
 const app = document.querySelector('#app');
@@ -85,6 +89,7 @@ function teamPicker(targetId, selectedId) {
 function ensureRuntimeState() {
   if (!Array.isArray(state.changeRequests)) state.changeRequests = [];
   if (!Array.isArray(state.notifications)) state.notifications = [];
+  if (!Array.isArray(state.aiRequests)) state.aiRequests = [];
   state.notifications = state.notifications.filter(n => !(n.type === 'approval_required' && !n.changeRequestId && !n.projectId));
   state.notifications.forEach(n => {
     if (typeof n.read !== 'boolean') n.read = Boolean(n.readAt);
@@ -207,7 +212,7 @@ function layout(content) {
         <header class="topbar">
           <div class="mobile-brand">SpeedArti <span>Pilotage</span></div>
           <div class="top-actions">
-            <button class="demo-ai-btn" id="simulateAiBtn" title="Simuler une mise à jour ChatGPT ou Claude"><span>✦</span><b>IA démo</b></button>
+            <button class="quick-create-btn" id="quickCreateBtn" title="Actions rapides"><span>＋</span><b>Créer</b></button><button class="demo-ai-btn" id="simulateAiBtn" title="Simuler une mise à jour ChatGPT ou Claude"><span>✦</span><b>IA démo</b></button>
             <button class="icon-btn search-btn" id="searchBtn" aria-label="Rechercher">⌕</button>
             <button class="icon-btn notif-btn" id="notificationBtn" aria-label="Notifications">♢${unread ? `<b>${unread}</b>` : ''}</button>
             <button class="avatar" title="Thibault">${esc(state.currentUser.initials)}</button>
@@ -227,6 +232,7 @@ function layout(content) {
       ${aiSimulationOpen ? renderAiSimulationModal() : ''}
       ${documentModalOpen ? renderDocumentModal() : ''}
       ${approvalRequestId ? renderApprovalModal(approvalRequestId) : ''}
+      ${quickActionOpen ? renderQuickActionModal() : ''}
     </div>
   `;
 }
@@ -237,6 +243,24 @@ function pageHeader(title, subtitle = '', action = '') {
 
 function statusBadge(status) { return `<span class="badge status-${status}">${statusLabels[status] || status}</span>`; }
 function priorityBadge(priority) { return `<span class="badge priority-${priority}">${priorityLabels[priority] || priority}</span>`; }
+
+function taskQuickLabel(t) {
+  if (!t) return '';
+  if (t.status === 'completed') return 'Réouvrir';
+  if (t.status === 'todo' || t.status === 'paused' || t.status === 'blocked') return 'Démarrer';
+  return 'Terminer';
+}
+
+function taskCompletionSummary(projectId) {
+  const list = state.tasks.filter(t => t.projectId === projectId);
+  const done = list.filter(t => t.status === 'completed').length;
+  return { done, total:list.length };
+}
+
+function pendingApprovals() {
+  ensureRuntimeState();
+  return state.changeRequests.filter(r => r.status === 'pending');
+}
 
 function renderToday() {
   const today = '2026-09-17'; // date fixe de la démo pour rester cohérente avec les données mockées
@@ -265,7 +289,7 @@ function renderToday() {
     <section class="section">
       <div class="section-title"><h2>Mes tâches</h2><button class="text-button" data-action="quick-add">+ Ajouter</button></div>
       <div class="task-list">
-        ${myTasks.map(t => `<div class="task-row"><button class="checkbox" data-complete="${t.id}" aria-label="Terminer"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${esc(project(t.projectId)?.name || 'Sans projet')} · ${esc(teamName(t.assignedTo))}</small></button>${priorityBadge(t.priority)}<button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || `<div class="empty-line">Aucune tâche prévue aujourd’hui.</div>`}
+        ${myTasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}" aria-label="Terminer"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${esc(project(t.projectId)?.name || 'Sans projet')} · ${esc(teamName(t.assignedTo))}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || `<div class="empty-line">Aucune tâche prévue aujourd’hui.</div>`}
       </div>
     </section>
 
@@ -280,16 +304,20 @@ function renderToday() {
           ${state.team.filter(m => m.id !== state.currentUser.id).map(m => {
             const pending = state.tasks.filter(t => t.assignedTo === m.id && t.status !== 'completed').length;
             const blockers = state.projects.filter(p => p.owner === m.id && p.blocker).length;
-            return `<div class="team-row"><div><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small></div><span>${pending} tâches · ${blockers ? `${blockers} blocage` : 'Tout va bien'}</span></div>`;
+            return `<button class="team-row team-row-button" data-team-planning="${m.id}"><div><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small></div><span>${pending} tâches · ${blockers ? `${blockers} blocage` : 'Tout va bien'} →</span></button>`;
           }).join('')}
         </div>
       </div>
     </section>
 
+    ${pendingApprovals().length ? `<section class="section decisions-box">
+      <div class="section-title"><h2>Décisions à prendre</h2><button class="text-button" id="openNotifFromToday">Tout voir →</button></div>
+      <div class="decision-list">${pendingApprovals().slice(0,3).map(r => { const p=project(r.projectId); return `<button class="decision-row" data-approval="${r.id}"><div><strong>${esc(p?.name || 'Projet')}</strong><small>Passage en Terminé demandé par ${esc(r.requestedBy || 'IA')}</small></div><span>Examiner →</span></button>`; }).join('')}</div>
+    </section>` : ''}
     <section class="section attention-box">
       <div class="section-title"><h2>À traiter</h2></div>
       <button class="attention-row" data-page="planning"><strong>${toPlan} élément${toPlan > 1 ? 's' : ''} à planifier</strong><span>Voir →</span></button>
-      <button class="attention-row" id="openNotifFromToday"><strong>${approvals} validation${approvals > 1 ? 's' : ''} demandée${approvals > 1 ? 's' : ''}</strong><span>Voir →</span></button>
+      <button class="attention-row" id="openNotifFromTodayBottom"><strong>${approvals} validation${approvals > 1 ? 's' : ''} demandée${approvals > 1 ? 's' : ''}</strong><span>Voir →</span></button>
     </section>`;
 }
 
@@ -354,11 +382,11 @@ function renderProjects() {
       ${filters.map(([value,label]) => `<button class="${projectFilter === value ? 'active' : ''}" data-project-filter="${value}">${label}</button>`).join('')}
     </div>
     <div class="project-list">
-      ${visibleProjects.map(p => `<button class="project-row" data-project="${p.id}">
-        <div class="project-main"><div class="project-title-line"><strong>${esc(p.name)}</strong>${statusBadge(p.status)}${priorityBadge(p.priority)}</div><small>${esc(teamName(p.owner))}</small></div>
+      ${visibleProjects.map(p => { const summary=taskCompletionSummary(p.id); const pending=pendingCompletionRequest(p.id); return `<button class="project-row" data-project="${p.id}">
+        <div class="project-main"><div class="project-title-line"><strong>${esc(p.name)}</strong>${statusBadge(p.status)}${priorityBadge(p.priority)}${pending ? '<span class="badge status-to_validate">Validation</span>' : ''}</div><small>${esc(teamName(p.owner))} · ${summary.done}/${summary.total} tâches terminées</small></div>
         <div class="project-progress"><span>${p.progress} %</span><div class="progress"><i style="width:${p.progress}%"></i></div></div>
         <div class="project-context"><small>${p.blocker ? 'Blocage' : 'Prochaine action'}</small><span>${esc(p.blocker || p.nextAction || 'À définir')}</span></div>
-      </button>`).join('') || `<div class="empty-state">Aucun projet dans cette vue.</div>`}
+      </button>`; }).join('') || `<div class="empty-state">Aucun projet dans cette vue.</div>`}
     </div>`;
 }
 function renderProjectDetail(id) {
@@ -377,7 +405,7 @@ function renderProjectDetail(id) {
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
     </section>
     ${pendingCompletionRequest(p.id) ? `<section class="approval-banner"><div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la décision n’est pas validée.</small></div><button class="primary-btn" data-approval="${pendingCompletionRequest(p.id).id}">Examiner</button></section>` : ''}
-    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche.</div>'}</div></section>
+    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
 }
@@ -429,7 +457,9 @@ function renderDocuments() {
 
 function renderActivityItem(a) {
   const p = project(a.projectId);
-  return `<div class="activity-item"><time>${formatTime(a.at)}</time><div><strong>${esc(a.actor)}</strong><small>${esc(p?.name || 'SpeedArti')}</small><p>${esc(a.text)}</p></div></div>`;
+  const actor = String(a.actor || 'Système');
+  const sourceClass = /chatgpt|claude| via /i.test(actor) ? 'activity-ai' : 'activity-human';
+  return `<div class="activity-item ${sourceClass}"><time>${formatDate(a.at)}<small>${formatTime(a.at)}</small></time><div><strong>${esc(actor)}</strong><small>${esc(p?.name || 'SpeedArti')}</small><p>${esc(a.text)}</p></div></div>`;
 }
 
 function renderActivity() {
@@ -440,23 +470,43 @@ function renderActivity() {
     ['guillaume','Guillaume'],
     ['ai','IA']
   ];
+  const q = activitySearch.trim().toLowerCase();
   const visible = state.activity.filter(a => {
-    const actor = a.actor.toLowerCase();
-    if (activityFilter === 'all') return true;
-    if (activityFilter === 'thibault') return actor.includes('thibault');
-    if (activityFilter === 'anne') return actor.includes('anne-sophie');
-    if (activityFilter === 'guillaume') return actor.includes('guillaume');
-    if (activityFilter === 'ai') return actor.includes('via') || actor.includes('chatgpt') || actor.includes('claude');
+    const actor = String(a.actor || '').toLowerCase();
+    if (activityFilter === 'thibault' && !actor.includes('thibault')) return false;
+    if (activityFilter === 'anne' && !actor.includes('anne-sophie')) return false;
+    if (activityFilter === 'guillaume' && !actor.includes('guillaume')) return false;
+    if (activityFilter === 'ai' && !(actor.includes('via') || actor.includes('chatgpt') || actor.includes('claude'))) return false;
+    if (activityProjectFilter !== 'all' && a.projectId !== activityProjectFilter) return false;
+    if (q && !`${a.actor || ''} ${a.text || ''} ${project(a.projectId)?.name || ''}`.toLowerCase().includes(q)) return false;
     return true;
   });
-  return pageHeader('Activité', 'Ce qui a réellement changé') + `
+  return pageHeader('Activité', 'Historique lisible de ce qui a réellement changé') + `
     <div class="tabs">
       ${filters.map(([value,label]) => `<button class="${activityFilter === value ? 'active' : ''}" data-activity-filter="${value}">${label}</button>`).join('')}
     </div>
+    <div class="toolbar activity-toolbar"><input id="activitySearch" class="search-field" value="${esc(activitySearch)}" placeholder="Rechercher dans l’activité…" /><select id="activityProjectFilter"><option value="all">Tous les projets</option>${state.projects.map(p => `<option value="${p.id}" ${activityProjectFilter === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     <section class="section"><div class="activity-list">${visible.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité dans ce filtre.</div>'}</div></section>`;
 }
+
 function renderMore() {
-  return pageHeader('Plus') + `<div class="menu-list"><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
+  return pageHeader('Plus', 'Outils complémentaires de la démo') + `<div class="menu-list"><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button><button id="exportDemo">Sauvegarder la démo <span>↓</span></button><button id="importDemo">Restaurer une sauvegarde <span>↑</span></button></div>`;
+}
+
+function renderQuickActionModal() {
+  const unplanned = state.tasks.find(t => t.needsPlanning && t.planningStatus === 'unplanned');
+  const approval = pendingApprovals()[0];
+  return `<div class="modal-backdrop" id="quickActionBackdrop"></div><div class="quick-action-modal" role="dialog" aria-modal="true">
+    <header><div><small>ACTIONS RAPIDES</small><h2>Que veux-tu faire ?</h2></div><button class="icon-btn" id="closeQuickAction">×</button></header>
+    <div class="quick-action-grid">
+      <button data-quick-action="task"><span>✓</span><div><strong>Nouvelle tâche</strong><small>Créer et assigner rapidement</small></div></button>
+      <button data-quick-action="project"><span>▦</span><div><strong>Nouveau projet</strong><small>Créer un projet complet</small></div></button>
+      <button data-quick-action="document"><span>▤</span><div><strong>Lier un document</strong><small>Référence Google Drive</small></div></button>
+      <button data-quick-action="planning" ${unplanned ? '' : 'disabled'}><span>↔</span><div><strong>Planifier le prochain élément</strong><small>${unplanned ? esc(unplanned.title) : 'Rien à planifier'}</small></div></button>
+      <button data-quick-action="approval" ${approval ? '' : 'disabled'}><span>!</span><div><strong>Traiter une validation</strong><small>${approval ? esc(project(approval.projectId)?.name || 'Projet') : 'Aucune validation'}</small></div></button>
+      <button data-quick-action="notifications"><span>♢</span><div><strong>Centre de notifications</strong><small>${unreadNotifications()} non lue${unreadNotifications() > 1 ? 's' : ''}</small></div></button>
+    </div>
+  </div>`;
 }
 
 function renderNotifications() {
@@ -483,6 +533,7 @@ function renderNotifications() {
       <button class="${notificationFilter === 'warning' ? 'active' : ''}" data-notif-filter="warning">Alertes</button>
       <button class="${notificationFilter === 'error' ? 'active' : ''}" data-notif-filter="error">Erreurs</button>
     </div>
+    <div class="notification-bulk"><button class="quiet-action" id="markAllRead">Tout marquer lu</button>${pendingApprovals().length ? `<button class="text-button" id="openFirstApproval">Traiter une validation</button>` : ''}</div>
     <div class="notification-list">
       ${active.map(n => `<article class="notification-item severity-${n.severity} ${n.read ? 'is-read' : 'is-unread'}" data-notif="${n.id}"><span class="notif-dot"></span><div><div class="notif-title-line"><strong>${esc(n.title)}</strong>${Number(n.count || 1) > 1 ? `<span class="count-badge">×${n.count}</span>` : ''}</div><p>${esc(n.message)}</p><div class="notif-actions">${actionHtml(n)}${!n.read ? `<button class="quiet-action" data-notif-read="${n.id}">Lu</button>` : ''}${n.actionType !== 'approval' && n.actionType !== 'plan' && !['deadline','blocker'].includes(n.type) ? `<button class="quiet-action" data-resolve="${n.id}">Résoudre</button>` : ''}</div></div></article>`).join('') || '<div class="empty-state">Aucune notification dans ce filtre.</div>'}
     </div>
@@ -565,7 +616,7 @@ function renderAiSimulationModal() {
         <option value="routine_progress">Progression normale → automatique</option>
         <option value="blocker">Nouveau blocage → automatique + alerte</option>
         <option value="complete_project">Projet proposé comme terminé → validation Thibault</option>
-        <option value="technical_error">Erreur technique → notification regroupée</option>
+        <option value="technical_error">Erreur technique → notification regroupée</option><option value="duplicate_request">Rejouer une requête IA → doublon ignoré</option>
       </select></label>
       <label class="form-field form-field-full"><span>Source</span><select id="aiSource">${Object.entries(aiSourceLabels).map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
@@ -924,7 +975,7 @@ function syncAiSimulationFields() {
   document.querySelectorAll('[data-ai-section="new-task"]').forEach(el => el.hidden = mode !== 'new_task');
   document.querySelectorAll('[data-ai-section="progress"]').forEach(el => el.hidden = mode !== 'routine_progress');
   const detail = document.querySelector('[data-ai-section="detail"]');
-  if (detail) detail.hidden = mode === 'complete_project' || mode === 'routine_progress';
+  if (detail) detail.hidden = ['complete_project','routine_progress','duplicate_request'].includes(mode);
   const label = document.querySelector('#aiDetailLabel');
   const input = document.querySelector('#aiTaskTitle');
   const rule = document.querySelector('#aiRuleText');
@@ -933,15 +984,26 @@ function syncAiSimulationFields() {
   if (mode === 'complete_project') { if(rule) rule.innerHTML='<strong>Règle :</strong> l’IA ne peut pas terminer officiellement un projet. Une validation Thibault est obligatoire.'; }
   if (mode === 'technical_error') { if(label) label.textContent='Erreur technique'; if(input) input.value='Échec de synchronisation de la mise à jour'; if(rule) rule.innerHTML='<strong>Anti-spam :</strong> les erreurs identiques sont regroupées dans une seule notification avec un compteur.'; }
   if (mode === 'routine_progress') { if(rule) rule.innerHTML='<strong>Règle :</strong> une progression normale est appliquée automatiquement et ajoutée à l’historique.'; }
+  if (mode === 'duplicate_request') { if(rule) rule.innerHTML='<strong>Anti-doublon :</strong> une requête IA déjà reçue est ignorée sans recréer de tâche ni d’action.'; }
 }
 
 function simulateAiIncoming() {
   const mode = document.querySelector('#aiMode')?.value || 'new_task';
   const source = document.querySelector('#aiSource')?.value || 'chatgpt_thibault';
+  if (mode === 'duplicate_request') {
+    ensureRuntimeState();
+    const requestId = state.aiRequests.at(-1)?.requestId || 'demo-request-duplicate-001';
+    if (!state.aiRequests.some(r => r.requestId === requestId)) state.aiRequests.push({ requestId, source, receivedAt:new Date().toISOString() });
+    upsertNotification({ severity:'info', type:'task_update', title:'Mise à jour IA déjà reçue', message:'La requête a été reconnue et ignorée : aucune tâche ni action n’a été créée en double.', actionType:'read', groupKey:`ai-duplicate:${requestId}`, internalTag:TAGS.AI_REQUEST_DEDUP });
+    addActivity({ actor:aiSourceActor(source), projectId:null, text:'Requête IA dupliquée ignorée automatiquement', internalTag:TAGS.AI_REQUEST_DEDUP });
+    persist(TAGS.AI_REQUEST_DEDUP, 'Doublon IA ignoré', { requestId, source });
+    aiSimulationOpen=false; notificationOpen=true; render(); return;
+  }
   const projectId = document.querySelector('#aiProject')?.value || null;
   const title = document.querySelector('#aiTaskTitle')?.value.trim() || '';
   const actor = aiSourceActor(source);
   trace(TAGS.AI_REQUEST_RECEIVED, 'Mise à jour IA reçue (simulation)', { mode, source, projectId });
+  state.aiRequests.push({ requestId:crypto.randomUUID(), source, mode, receivedAt:new Date().toISOString() });
 
   if (mode !== 'new_task' && mode !== 'technical_error' && !projectId) {
     document.querySelector('#aiProject')?.classList.add('field-error');
@@ -1002,7 +1064,81 @@ function simulateAiIncoming() {
   }
 }
 
+function advanceTaskStatus(taskId) {
+  const t = task(taskId);
+  if (!t) return;
+  const previous = t.status;
+  if (t.status === 'completed') t.status = 'todo';
+  else if (['todo','paused','blocked'].includes(t.status)) t.status = 'in_progress';
+  else t.status = 'completed';
+  t.completedAt = t.status === 'completed' ? new Date().toISOString() : null;
+  addActivity({ projectId:t.projectId, text:`${t.title} : ${statusLabels[previous]} → ${statusLabels[t.status]}`, internalTag:TAGS.TASK_STATUS_QUICK });
+  persist(TAGS.TASK_STATUS_QUICK, 'Statut tâche modifié rapidement', { taskId, previous, status:t.status });
+  render();
+}
+
+function openTeamPlanning(userId) {
+  planningFilterOwner = userId;
+  currentPage = 'planning';
+  selectedProjectId = null;
+  trace(TAGS.TEAM_SHORTCUT, 'Ouverture planification équipe', { userId });
+  render();
+}
+
+function markAllNotificationsRead() {
+  const now = new Date().toISOString();
+  state.notifications.filter(n => !n.resolved && !n.read).forEach(n => { n.read=true; n.readAt=now; });
+  persist(TAGS.NOTIF_BULK_READ, 'Toutes les notifications actives marquées lues', {});
+  render();
+}
+
+function openQuickAction() {
+  quickActionOpen = true;
+  notificationOpen = false;
+  trace(TAGS.QUICK_ACTION, 'Ouverture actions rapides');
+  render();
+}
+function closeQuickAction() { quickActionOpen=false; render(); }
+function runQuickAction(action) {
+  const unplanned = state.tasks.find(t => t.needsPlanning && t.planningStatus === 'unplanned');
+  const approval = pendingApprovals()[0];
+  quickActionOpen = false;
+  if (action === 'task') return openTaskModal();
+  if (action === 'project') return openProjectModal();
+  if (action === 'document') return openDocumentModal();
+  if (action === 'planning' && unplanned) return openPlanning(unplanned.id);
+  if (action === 'approval' && approval) return openApproval(approval.id);
+  if (action === 'notifications') { notificationOpen=true; return render(); }
+  render();
+}
+
+function exportDemoBackup() {
+  const payload = { version:'speedarti-pilotage-demo-v7', exportedAt:new Date().toISOString(), state };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='speedarti-pilotage-sauvegarde.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  trace(TAGS.DEMO_BACKUP, 'Sauvegarde locale exportée');
+}
+
+function importDemoBackup() {
+  const input = document.createElement('input'); input.type='file'; input.accept='application/json';
+  input.addEventListener('change', async () => {
+    const file=input.files?.[0]; if(!file) return;
+    try {
+      const parsed=JSON.parse(await file.text()); const incoming=parsed.state || parsed;
+      if (!Array.isArray(incoming.projects) || !Array.isArray(incoming.tasks)) throw new Error('format');
+      state=incoming; ensureRuntimeState(); saveState(state); trace(TAGS.DEMO_RESTORE, 'Sauvegarde locale restaurée'); render();
+    } catch { window.alert('Cette sauvegarde n’est pas compatible avec la démo SpeedArti Pilotage.'); }
+  });
+  input.click();
+}
+
 function bindEvents() {
+  document.querySelector('#quickCreateBtn')?.addEventListener('click', openQuickAction);
+  document.querySelector('#closeQuickAction')?.addEventListener('click', closeQuickAction);
+  document.querySelector('#quickActionBackdrop')?.addEventListener('click', closeQuickAction);
+  document.querySelectorAll('[data-quick-action]').forEach(el => el.addEventListener('click', () => runQuickAction(el.dataset.quickAction)));
   document.querySelector('#simulateAiBtn')?.addEventListener('click', openAiSimulation);
   document.querySelector('#closeAiSimulation')?.addEventListener('click', closeAiSimulation);
   document.querySelector('#cancelAiSimulation')?.addEventListener('click', closeAiSimulation);
@@ -1016,6 +1152,8 @@ function bindEvents() {
   document.querySelectorAll('[data-mobile-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.mobilePage)));
   document.querySelectorAll('[data-project]').forEach(el => el.addEventListener('click', () => { selectedProjectId = el.dataset.project; currentPage = 'projects'; render(); }));
   document.querySelectorAll('[data-complete]').forEach(el => el.addEventListener('click', () => completeTask(el.dataset.complete)));
+  document.querySelectorAll('[data-task-status]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); advanceTaskStatus(el.dataset.taskStatus); }));
+  document.querySelectorAll('[data-team-planning]').forEach(el => el.addEventListener('click', () => openTeamPlanning(el.dataset.teamPlanning)));
   document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openPlanning(el.dataset.plan); }));
   document.querySelectorAll('[data-edit-task]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openTaskEditor(el.dataset.editTask); }));
   document.querySelectorAll('[data-edit-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openProjectModal(el.dataset.editProject); }));
@@ -1035,7 +1173,11 @@ function bindEvents() {
 
   document.querySelectorAll('[data-project-filter]').forEach(el => el.addEventListener('click', () => { projectFilter = el.dataset.projectFilter; render(); }));
   document.querySelectorAll('[data-activity-filter]').forEach(el => el.addEventListener('click', () => { activityFilter = el.dataset.activityFilter; render(); }));
+  document.querySelector('#activityProjectFilter')?.addEventListener('change', e => { activityProjectFilter=e.target.value; trace(TAGS.ACTIVITY_ADVANCED, 'Filtre activité projet', { projectId:activityProjectFilter }); render(); });
+  document.querySelector('#activitySearch')?.addEventListener('input', e => { activitySearch=e.target.value; trace(TAGS.ACTIVITY_ADVANCED, 'Recherche activité', { query:activitySearch }); render(); requestAnimationFrame(() => { const i=document.querySelector('#activitySearch'); if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } }); });
   document.querySelectorAll('[data-notif-filter]').forEach(el => el.addEventListener('click', () => { notificationFilter = el.dataset.notifFilter; render(); }));
+  document.querySelector('#markAllRead')?.addEventListener('click', markAllNotificationsRead);
+  document.querySelector('#openFirstApproval')?.addEventListener('click', () => { const r=pendingApprovals()[0]; if(r) openApproval(r.id); });
   document.querySelectorAll('[data-action="quick-add"]').forEach(el => el.addEventListener('click', () => openTaskModal()));
   document.querySelectorAll('[data-action="add-project-task"]').forEach(el => el.addEventListener('click', () => openTaskModal(el.dataset.projectId)));
   document.querySelectorAll('[data-action="new-project"]').forEach(el => el.addEventListener('click', () => openProjectModal()));
@@ -1051,7 +1193,8 @@ function bindEvents() {
   document.querySelectorAll('[data-open-doc]').forEach(el => el.addEventListener('click', () => { const d=state.documents.find(x=>x.id===el.dataset.openDoc); if(d?.url) window.open(d.url, '_blank', 'noopener'); }));
 
   document.querySelector('#notificationBtn')?.addEventListener('click', () => { notificationOpen = !notificationOpen; trace(TAGS.NOTIFICATION_DRAWER, 'Drawer notifications', { open: notificationOpen }); render(); });
-  document.querySelector('#openNotifFromToday')?.addEventListener('click', () => { notificationOpen = true; render(); });
+  document.querySelector('#openNotifFromToday')?.addEventListener('click', () => { notificationOpen = true; notificationFilter='action'; render(); });
+  document.querySelector('#openNotifFromTodayBottom')?.addEventListener('click', () => { notificationOpen = true; notificationFilter='action'; render(); });
   document.querySelector('#closeNotif')?.addEventListener('click', () => { notificationOpen = false; render(); });
   document.querySelector('#drawerBackdrop')?.addEventListener('click', () => { notificationOpen = false; render(); });
   document.querySelector('#backProjects')?.addEventListener('click', () => { selectedProjectId = null; render(); });
@@ -1096,6 +1239,8 @@ function bindEvents() {
   document.querySelector('#cancelDocumentModal')?.addEventListener('click', closeDocumentModal);
   document.querySelector('#documentModalBackdrop')?.addEventListener('click', closeDocumentModal);
   document.querySelector('#saveDocument')?.addEventListener('click', createDocumentFromForm);
+  document.querySelector('#exportDemo')?.addEventListener('click', exportDemoBackup);
+  document.querySelector('#importDemo')?.addEventListener('click', importDemoBackup);
 
   document.querySelector('#closeApproval')?.addEventListener('click', closeApproval);
   document.querySelector('#approvalBackdrop')?.addEventListener('click', closeApproval);
@@ -1103,6 +1248,7 @@ function bindEvents() {
   document.querySelector('#rejectApproval')?.addEventListener('click', e => decideApproval(e.currentTarget.dataset.request, false));
 
   document.querySelector('#resetDemo')?.addEventListener('click', () => {
+    if (!window.confirm('Réinitialiser toute la démo locale ?')) return;
     state = resetState();
     currentPage = 'today';
     selectedProjectId = null;
@@ -1125,6 +1271,9 @@ function bindEvents() {
     documentProjectFilter = 'all';
     documentModalOpen = false;
     approvalRequestId = null;
+    quickActionOpen = false;
+    activityProjectFilter = 'all';
+    activitySearch = '';
     mobilePlanningBucket = 'this_month';
     render();
   });
@@ -1166,8 +1315,9 @@ function updateSearch(query) {
   const results = [
     ...state.projects.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Projet', title:x.name, action:`project:${x.id}` })),
     ...state.tasks.filter(x => x.title.toLowerCase().includes(q)).map(x => ({ type:'Tâche', title:x.title, action:`task:${x.id}` })),
-    ...state.documents.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Document', title:x.name, action:'documents' }))
-  ].slice(0,8);
+    ...state.documents.filter(x => x.name.toLowerCase().includes(q)).map(x => ({ type:'Document', title:x.name, action:'documents' })),
+    ...state.activity.filter(x => `${x.actor || ''} ${x.text || ''}`.toLowerCase().includes(q)).map(x => ({ type:'Activité', title:x.text, action:'activity' }))
+  ].slice(0,12);
   target.innerHTML = results.length ? results.map(r => `<button class="search-result" data-search-action="${r.action}"><small>${r.type}</small><strong>${esc(r.title)}</strong></button>`).join('') : '<p class="search-hint">Aucun résultat.</p>';
   target.querySelectorAll('[data-search-action]').forEach(btn => btn.addEventListener('click', () => {
     const action = btn.dataset.searchAction;
