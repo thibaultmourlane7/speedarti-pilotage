@@ -186,3 +186,23 @@ L’assignation ne dépend plus d’un simple menu déroulant : Thibault, Anne-S
 - La validation est humaine ; la correction reste possible avant validation.
 - Dans la démo locale, le bouton **Simuler collecte IA** reproduit le futur flux API. Après branchement Supabase, les agents enverront ces données au service central sans lire leurs conversations respectives.
 - Toute création, modification ou validation importante du compte rendu génère une entrée dans l'historique d'activité.
+
+
+## V10 — Contrôle humain final avant Supabase
+
+| ID | Nom | Description | Fichier / fonction | Statut |
+|---|---|---|---|---|
+| PILOT-REPORT-007 | Préselection compte rendu | Le bouton d'ajout d'un membre préselectionne réellement la bonne personne. | `app.js` / `openDailyReportModal` | Actif |
+| PILOT-PROJ-011 | Filtre projets bloqués | L'onglet Bloqués inclut les projets au statut `blocked` **ou** porteurs d'un blocage actif. | `app.js` / `renderProjects` | Actif |
+| PILOT-NOTIF-012 | Réessai technique démo | Le bouton Réessayer simule explicitement une relance, journalise l'action puis acquitte l'erreur. | `app.js` / `retryNotification` | Actif |
+| PILOT-UI-036 | Mobile comptes rendus | Empêche le débordement horizontal des actions de la page Comptes rendus sur mobile. | `styles.css` | Actif |
+| PILOT-UI-037 | Contrôles non trompeurs | L'avatar statique et les rendez-vous Google sans action ne sont plus rendus comme des boutons. | `app.js` / `layout`, `renderCalendar` | Actif |
+| PILOT-UI-038 | Actions tâches mobile | Les actions statut / report passent sur une seconde ligne entièrement accessible sur mobile. | `styles.css` | Actif |
+
+### Règles V10
+
+- Aucun élément visuellement présenté comme un bouton ne doit rester sans action associée.
+- Le filtre **Bloqués** reflète le blocage métier réel, même si le statut principal du projet reste `in_progress`.
+- Les raccourcis de compte rendu par membre doivent conserver la personne choisie jusqu'à l'ouverture du formulaire.
+- Une action **Réessayer** doit être explicite : dans la démo, elle est signalée comme simulation et tracée dans l'activité ; le vrai retry réseau sera branché avec Supabase/API.
+- Sur mobile, les actions essentielles doivent rester entièrement accessibles sans défilement horizontal de la page.
