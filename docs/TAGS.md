@@ -122,3 +122,28 @@ L’assignation ne dépend plus d’un simple menu déroulant : Thibault, Anne-S
 - `read` / `readAt` signifie que la notification a été vue ; `resolved` / `resolvedAt` signifie que le problème ou l’action a réellement été traité.
 - Les erreurs techniques identiques sont regroupées par `groupKey` pour éviter le spam ; un compteur conserve le nombre d’occurrences.
 - Les échéances dépassées et blocages actifs génèrent au maximum une notification active par élément grâce à la déduplication.
+
+
+## V7 — Gros lot productivité, recherche et robustesse de démo
+
+| Balise | Fonction | Visible UI |
+|---|---|---|
+| `PILOT-UI-027` | Palette d’actions rapides « Créer » | Non (balise) |
+| `PILOT-UI-028` | Raccourci Équipe → Roadmap filtrée par responsable | Non (balise) |
+| `PILOT-UI-029` | Recherche + filtre projet dans l’activité | Non (balise) |
+| `PILOT-UI-031` | Recherche globale enrichie | Non (balise) |
+| `PILOT-TASK-005` | Changement rapide du statut d’une tâche | Non |
+| `PILOT-NOTIF-011` | Marquer toutes les notifications actives comme lues | Non |
+| `PILOT-AI-016` | Détection / rejet d’une requête IA dupliquée | Non |
+| `PILOT-DEMO-004` | Export JSON de la sauvegarde locale de démo | Non |
+| `PILOT-DEMO-005` | Restauration d’une sauvegarde locale de démo | Non |
+
+### Règles V7
+
+- Le bouton **Créer** centralise les actions fréquentes sans ajouter une nouvelle page principale.
+- Les tâches peuvent passer rapidement de `todo` à `in_progress`, puis à `completed`, tout en conservant l’historique.
+- La zone Équipe reste dans Aujourd’hui ; un clic ouvre la Roadmap directement filtrée sur la personne concernée.
+- Le journal d’activité peut être filtré par personne, projet et texte, sans exposer les balises internes.
+- Les notifications peuvent être marquées lues en masse sans être considérées comme résolues.
+- Une requête IA déjà traitée est ignorée sans recréer de tâche ni de notification métier en double.
+- Export / import JSON concerne uniquement la démo locale. En production, Supabase deviendra la source structurée centrale.
