@@ -47,3 +47,25 @@ Palette, statuts, priorités, roadmap, notifications, agenda et documents. Invis
 | `PILOT-UI-016` | Filtres du centre de notifications | Non |
 
 Ces balises restent strictement internes et ne doivent jamais être affichées dans l’interface finale.
+
+
+## V4 — Flux IA vers la Roadmap
+
+| Balise | Fonction | Visible UI |
+|---|---|---|
+| `PILOT-UI-017` | Fenêtre de simulation d’une mise à jour IA | Non (balise) |
+| `PILOT-AI-009` | Réception d’une mise à jour ChatGPT / Claude | Non |
+| `PILOT-AI-011` | Transformation de la mise à jour IA en donnée Pilotage | Non |
+| `PILOT-PLAN-001` | Détection qu’un nouvel élément nécessite une planification | Non |
+| `PILOT-NOTIF-005` | Notification « nouvel élément à planifier » | Non |
+
+### Scénario V4
+
+1. Une mise à jour ChatGPT ou Claude est simulée.
+2. Le nouvel élément est créé avec `planningStatus = unplanned` et `needsPlanning = true`.
+3. Une notification de planification est créée.
+4. Si Pilotage est ouvert, la fenêtre « Planifier cette tâche » s’ouvre immédiatement.
+5. L’IA peut suggérer une période mais Thibault choisit la période officielle.
+6. Si la fenêtre est annulée, l’élément reste « À organiser » et la notification reste active.
+
+Dans la vraie version, la simulation sera remplacée par l’API sécurisée sans modifier ce comportement fonctionnel.
