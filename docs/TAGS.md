@@ -159,3 +159,30 @@ L’assignation ne dépend plus d’un simple menu déroulant : Thibault, Anne-S
 | PILOT-PROJ-010 | Lever blocage | Suppression explicite d’un blocage et résolution des alertes associées. | `app.js` / `clearProjectBlocker` | Actif |
 | PILOT-UI-032 | Modale archivage | Confirmation visuelle avant archivage. | `app.js` / `renderArchiveModal` | Actif |
 | PILOT-UI-033 | Charge équipe | Synthèse simple Aujourd’hui / Retards / En cours / Blocages par membre. | `app.js` / `renderTeamWorkloadModal` | Actif |
+
+
+## V9 — Comptes rendus quotidiens avant Supabase
+
+| ID | Nom | Description | Fichier / fonction | Statut |
+|---|---|---|---|---|
+| PILOT-REPORT-001 | Collecte quotidienne IA | Simule la collecte du mini compte rendu quotidien de chaque IA/personne à partir des données de Pilotage. | `app.js` / `collectAutomaticDailyReports` | Actif |
+| PILOT-REPORT-002 | Ajout manuel compte rendu | Création manuelle d'un compte rendu quotidien quand l'IA ne l'a pas envoyé ou lorsqu'un humain veut compléter la journée. | `app.js` / `saveDailyReportFromForm` | Actif |
+| PILOT-REPORT-003 | Modification compte rendu | Correction d'un compte rendu IA ou manuel sans écraser l'historique d'activité. | `app.js` / `saveDailyReportFromForm` | Actif |
+| PILOT-REPORT-004 | Validation compte rendu | Validation humaine d'un mini bilan quotidien provenant d'une IA ou d'une saisie manuelle. | `app.js` / `validateDailyReport` | Actif |
+| PILOT-REPORT-005 | Consolidation multi-source | Regroupe plusieurs comptes rendus d'une même personne/journée en une synthèse unique sans supprimer les sources. | `app.js` / `consolidatePersonDailyReports` | Actif |
+| PILOT-REPORT-006 | Collecte multi-IA | Collecte un compte rendu par agent IA actif et par personne, avec coexistence de plusieurs IA pour un même membre. | `app.js` / `collectAutomaticDailyReports` | Actif |
+| PILOT-AI-017 | Registre multi-IA | Registre extensible des agents IA liés à chaque personne, avec état actif/inactif et catégorie. | `app.js` / `ensureAiAgents` | Actif |
+| PILOT-UI-034 | Modale compte rendu | Interface d'ajout / modification manuelle du compte rendu. | `app.js` / `renderDailyReportModal` | Actif |
+| PILOT-UI-035 | Filtres comptes rendus | Filtre par date et membre de l'équipe sur la vue quotidienne. | `app.js` / `renderDailyReports` | Actif |
+
+### Règles V9
+
+- Les **Comptes rendus** sont un module distinct de l'**Activité** : l'activité conserve les changements unitaires, tandis que le compte rendu synthétise la journée d'une personne.
+- Une même personne peut utiliser **plusieurs IA** : chaque IA garde sa propre identité de source et peut envoyer son mini compte rendu de la journée.
+- Pilotage conserve les comptes rendus sources séparément puis les **consolide par personne et par date** pour l'affichage.
+- Anne-Sophie est prévue avec Claude + ChatGPT ; Guillaume peut accueillir des IA marketing supplémentaires plus tard ; le registre est extensible sans refonte.
+- Une collecte IA ne remplace jamais un complément manuel ni un compte rendu source déjà validé.
+- Le compte rendu peut lier réalisations, blocages, prochaines étapes et projets concernés.
+- La validation est humaine ; la correction reste possible avant validation.
+- Dans la démo locale, le bouton **Simuler collecte IA** reproduit le futur flux API. Après branchement Supabase, les agents enverront ces données au service central sans lire leurs conversations respectives.
+- Toute création, modification ou validation importante du compte rendu génère une entrée dans l'historique d'activité.
