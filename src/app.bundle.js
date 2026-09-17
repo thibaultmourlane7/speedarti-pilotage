@@ -175,6 +175,9 @@ const TAGS = Object.freeze({
   PROJECT_EDIT: 'PILOT-PROJ-002',
   PROJECT_OWNER: 'PILOT-PROJ-003',
   PROJECT_PROGRESS: 'PILOT-PROJ-004',
+  PROJECT_COMPLETE_REQUEST: 'PILOT-PROJ-005',
+  PROJECT_COMPLETE_APPROVE: 'PILOT-PROJ-006',
+  PROJECT_COMPLETE_REJECT: 'PILOT-PROJ-007',
   TASK_MODAL: 'PILOT-UI-011',
   PROJECT_MODAL: 'PILOT-UI-012',
   PROJECT_FILTER: 'PILOT-UI-013',
@@ -189,9 +192,21 @@ const TAGS = Object.freeze({
   DOCUMENT_FILTER: 'PILOT-UI-022',
   DOCUMENT_MODAL: 'PILOT-UI-023',
   MOBILE_PLAN_ACTION: 'PILOT-UI-024',
+  APPROVAL_MODAL: 'PILOT-UI-025',
+  SMART_ALERTS: 'PILOT-UI-026',
   AI_REQUEST_RECEIVED: 'PILOT-AI-009',
   AI_REQUEST_PROCESS: 'PILOT-AI-011',
+  AI_ROUTINE_UPDATE: 'PILOT-AI-012',
+  AI_BLOCKER_UPDATE: 'PILOT-AI-013',
+  AI_COMPLETE_PROPOSAL: 'PILOT-AI-014',
+  AI_TECH_ERROR: 'PILOT-AI-015',
+  NOTIF_CREATE: 'PILOT-NOTIF-001',
+  NOTIF_TECH_ERROR: 'PILOT-NOTIF-004',
   NOTIF_PLAN: 'PILOT-NOTIF-005',
+  NOTIF_APPROVAL: 'PILOT-NOTIF-006',
+  NOTIF_DEADLINE: 'PILOT-NOTIF-007',
+  NOTIF_BLOCKER: 'PILOT-NOTIF-008',
+  NOTIF_DEDUP: 'PILOT-NOTIF-010',
   DOCUMENT_LINK: 'PILOT-DRIVE-001',
   ACTIVITY_LOG: 'PILOT-ACT-001',
   NOTIF_READ: 'PILOT-NOTIF-002',
@@ -226,6 +241,10 @@ let documentSearch = '';
 let documentProjectFilter = 'all';
 let documentModalOpen = false;
 let mobilePlanningBucket = 'this_month';
+let approvalRequestId = null;
+
+state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
+const DEMO_NOW = new Date('2026-09-17T13:45:00+02:00');
 
 const app = document.querySelector('#app');
 
@@ -281,6 +300,101 @@ function teamPicker(targetId, selectedId) {
   return `<div class="team-picker" data-picker="${targetId}"><input type="hidden" id="${targetId}" value="${selected}" />${state.team.map(m => `<button type="button" class="team-choice ${m.id === selected ? 'active' : ''}" data-team-target="${targetId}" data-team-value="${m.id}"><span>${personInitials(m.name)}</span><b>${esc(m.name)}</b><small>${esc(m.role)}</small></button>`).join('')}</div>`;
 }
 
+function ensureRuntimeState() {
+  if (!Array.isArray(state.changeRequests)) state.changeRequests = [];
+  if (!Array.isArray(state.notifications)) state.notifications = [];
+  state.notifications = state.notifications.filter(n => !(n.type === 'approval_required' && !n.changeRequestId && !n.projectId));
+  state.notifications.forEach(n => {
+    if (typeof n.read !== 'boolean') n.read = Boolean(n.readAt);
+    if (typeof n.resolved !== 'boolean') n.resolved = Boolean(n.resolvedAt);
+  });
+}
+
+function pendingCompletionRequest(projectId) {
+  return state.changeRequests.find(r => r.projectId === projectId && r.type === 'project_complete' && r.status === 'pending');
+}
+
+function upsertNotification({ severity='info', type='task_update', title, message, actionType='read', taskId=null, projectId=null, changeRequestId=null, groupKey=null, internalTag=TAGS.NOTIF_CREATE, increment=false, reactivate=false }) {
+  ensureRuntimeState();
+  const existing = groupKey ? state.notifications.find(n => !n.resolved && n.groupKey === groupKey) : null;
+  if (existing) {
+    existing.title = title;
+    existing.message = message;
+    existing.severity = severity;
+    existing.type = type;
+    existing.actionType = actionType;
+    existing.taskId = taskId || existing.taskId || null;
+    existing.projectId = projectId || existing.projectId || null;
+    existing.changeRequestId = changeRequestId || existing.changeRequestId || null;
+    existing.updatedAt = new Date().toISOString();
+    if (increment || reactivate) { existing.read = false; existing.readAt = null; }
+    if (increment) existing.count = Number(existing.count || 1) + 1;
+    trace(TAGS.NOTIF_DEDUP, 'Notification regroupée', { groupKey, count: existing.count || 1 });
+    return existing;
+  }
+  const notification = {
+    id: crypto.randomUUID(), severity, type, title, message, actionType,
+    taskId, projectId, changeRequestId, groupKey, internalTag,
+    count: 1, read: false, resolved: false, readAt: null, resolvedAt: null,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  state.notifications.unshift(notification);
+  trace(TAGS.NOTIF_CREATE, 'Notification créée', { type, severity, groupKey, notificationId: notification.id });
+  return notification;
+}
+
+function refreshSmartNotifications() {
+  ensureRuntimeState();
+  let changed = false;
+  state.notifications.filter(n => !n.resolved && (n.type === 'deadline' || n.type === 'blocker')).forEach(n => {
+    if (n.type === 'deadline') {
+      const t = task(n.taskId);
+      const stillActive = t && t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW;
+      if (!stillActive) { n.resolved = true; n.resolvedAt = new Date().toISOString(); changed = true; trace(TAGS.NOTIF_RESOLVE, 'Alerte échéance résolue automatiquement', { notificationId:n.id, taskId:n.taskId }); }
+    }
+    if (n.type === 'blocker') {
+      const p = project(n.projectId);
+      const stillActive = p && p.status !== 'completed' && Boolean(p.blocker);
+      if (!stillActive) { n.resolved = true; n.resolvedAt = new Date().toISOString(); changed = true; trace(TAGS.NOTIF_RESOLVE, 'Alerte blocage résolue automatiquement', { notificationId:n.id, projectId:n.projectId }); }
+    }
+  });
+  state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW).forEach(t => {
+    const key = `deadline:${t.id}`;
+    const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
+    upsertNotification({ severity:'warning', type:'deadline', title:'Échéance dépassée', message:`${t.title} · échéance ${formatDate(t.dueAt)}`, actionType:'edit_task', taskId:t.id, projectId:t.projectId, groupKey:key, internalTag:TAGS.NOTIF_DEADLINE });
+    if (!before) { changed = true; trace(TAGS.SMART_ALERTS, 'Alerte échéance générée', { taskId:t.id }); }
+  });
+  state.projects.filter(p => p.blocker && p.status !== 'completed').forEach(p => {
+    const key = `blocker:${p.id}`;
+    const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
+    upsertNotification({ severity:'warning', type:'blocker', title:'Blocage projet', message:`${p.name} · ${p.blocker}`, actionType:'open_project', projectId:p.id, groupKey:key, internalTag:TAGS.NOTIF_BLOCKER });
+    if (!before) { changed = true; trace(TAGS.SMART_ALERTS, 'Alerte blocage générée', { projectId:p.id }); }
+  });
+  if (changed) saveState(state);
+}
+
+function queueProjectCompletion(projectId, { sourceType='manual', requestedBy='Thibault', note='' } = {}) {
+  ensureRuntimeState();
+  const p = project(projectId);
+  if (!p || p.status === 'completed') return null;
+  const already = pendingCompletionRequest(projectId);
+  if (already) return already;
+  const request = {
+    id: crypto.randomUUID(), type:'project_complete', projectId, status:'pending',
+    requestedBy, sourceType, note, requestedAt:new Date().toISOString(),
+    proposed:{ status:'completed', progress:100 }
+  };
+  state.changeRequests.unshift(request);
+  upsertNotification({
+    severity:'action', type:'approval_required', title:'Validation projet demandée',
+    message:`${p.name} · passage en Terminé`, actionType:'approval', projectId,
+    changeRequestId:request.id, groupKey:`approval:${request.id}`, internalTag:TAGS.NOTIF_APPROVAL
+  });
+  addActivity({ actor: requestedBy, projectId, text:`Passage en Terminé proposé${note ? ` · ${note}` : ''}`, internalTag:TAGS.PROJECT_COMPLETE_REQUEST });
+  persist(TAGS.PROJECT_COMPLETE_REQUEST, 'Demande de clôture projet créée', { projectId, requestId:request.id, sourceType });
+  return request;
+}
+
 function persist(tag, message, details = {}) {
   saveState(state);
   trace(tag, message, details);
@@ -330,6 +444,7 @@ function layout(content) {
       ${projectModalOpen ? renderProjectModal() : ''}
       ${aiSimulationOpen ? renderAiSimulationModal() : ''}
       ${documentModalOpen ? renderDocumentModal() : ''}
+      ${approvalRequestId ? renderApprovalModal(approvalRequestId) : ''}
     </div>
   `;
 }
@@ -349,7 +464,15 @@ function renderToday() {
   const approvals = state.notifications.filter(n => !n.resolved && n.type === 'approval_required').length;
   const events = state.calendarEvents.filter(e => e.at.startsWith(today));
 
+  const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW).length;
+  const activeBlockers = state.projects.filter(p => p.blocker && p.status !== 'completed').length;
   return pageHeader('Bonjour Thibault', 'Jeudi 17 septembre') + `
+    <section class="pilot-pulse">
+      <button class="pulse-card pulse-red" data-notif-open-filter="warning"><span>Retards</span><strong>${overdue}</strong><small>échéance${overdue > 1 ? 's' : ''} dépassée${overdue > 1 ? 's' : ''}</small></button>
+      <button class="pulse-card pulse-orange" data-notif-open-filter="warning"><span>Blocages</span><strong>${activeBlockers}</strong><small>projet${activeBlockers > 1 ? 's' : ''} à surveiller</small></button>
+      <button class="pulse-card pulse-violet" data-notif-open-filter="action"><span>Validations</span><strong>${approvals}</strong><small>décision${approvals > 1 ? 's' : ''} attendue${approvals > 1 ? 's' : ''}</small></button>
+      <button class="pulse-card pulse-blue" data-page="planning"><span>À planifier</span><strong>${toPlan}</strong><small>nouvel élément</small></button>
+    </section>
     <section class="section">
       <div class="section-title"><h2>Agenda du jour</h2><button class="text-button" data-page="calendar">Voir l’agenda →</button></div>
       <div class="simple-list">
@@ -471,6 +594,7 @@ function renderProjectDetail(id) {
       <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong></div>
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
     </section>
+    ${pendingCompletionRequest(p.id) ? `<section class="approval-banner"><div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la décision n’est pas validée.</small></div><button class="primary-btn" data-approval="${pendingCompletionRequest(p.id).id}">Examiner</button></section>` : ''}
     <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
@@ -557,21 +681,32 @@ function renderNotifications() {
   const active = state.notifications.filter(n => !n.resolved).filter(n => {
     if (notificationFilter === 'all') return true;
     if (notificationFilter === 'action') return n.severity === 'action';
+    if (notificationFilter === 'warning') return n.severity === 'warning';
     if (notificationFilter === 'error') return n.severity === 'error';
     return true;
   });
+  const actionHtml = n => {
+    if (n.actionType === 'plan') return `<button class="text-button" data-plan="${n.taskId}" data-notif-read="${n.id}">Planifier →</button>`;
+    if (n.actionType === 'approval') return `<button class="text-button" data-approval="${n.changeRequestId}" data-notif-read="${n.id}">Examiner →</button>`;
+    if (n.actionType === 'edit_task') return `<button class="text-button" data-edit-task="${n.taskId}" data-notif-read="${n.id}">Ouvrir la tâche →</button>`;
+    if (n.actionType === 'open_project') return `<button class="text-button" data-open-project="${n.projectId}" data-notif-read="${n.id}">Ouvrir le projet →</button>`;
+    if (n.actionType === 'retry') return `<button class="text-button" data-resolve="${n.id}">Réessayer →</button>`;
+    return `<button class="text-button" data-notif-read="${n.id}">Marquer lu</button>`;
+  };
   return `<div class="drawer-backdrop" id="drawerBackdrop"></div><aside class="notification-drawer">
-    <header><div><h2>Notifications</h2><small>${state.notifications.filter(n => !n.resolved).length} à consulter</small></div><button class="icon-btn" id="closeNotif">×</button></header>
+    <header><div><h2>Notifications</h2><small>${state.notifications.filter(n => !n.resolved).length} active${state.notifications.filter(n => !n.resolved).length > 1 ? 's' : ''} · ${unreadNotifications()} non lue${unreadNotifications() > 1 ? 's' : ''}</small></div><button class="icon-btn" id="closeNotif">×</button></header>
     <div class="drawer-tabs">
       <button class="${notificationFilter === 'all' ? 'active' : ''}" data-notif-filter="all">Toutes</button>
       <button class="${notificationFilter === 'action' ? 'active' : ''}" data-notif-filter="action">À traiter</button>
+      <button class="${notificationFilter === 'warning' ? 'active' : ''}" data-notif-filter="warning">Alertes</button>
       <button class="${notificationFilter === 'error' ? 'active' : ''}" data-notif-filter="error">Erreurs</button>
     </div>
     <div class="notification-list">
-      ${active.map(n => `<article class="notification-item severity-${n.severity}" data-notif="${n.id}"><span class="notif-dot"></span><div><strong>${esc(n.title)}</strong><p>${esc(n.message)}</p><div class="notif-actions">${n.actionType === 'plan' ? `<button class="text-button" data-plan="${n.taskId}">Planifier →</button>` : n.actionType === 'retry' ? `<button class="text-button" data-resolve="${n.id}">Réessayer →</button>` : `<button class="text-button" data-resolve="${n.id}">Examiner →</button>`}</div></div></article>`).join('') || '<div class="empty-state">Aucune notification dans ce filtre.</div>'}
+      ${active.map(n => `<article class="notification-item severity-${n.severity} ${n.read ? 'is-read' : 'is-unread'}" data-notif="${n.id}"><span class="notif-dot"></span><div><div class="notif-title-line"><strong>${esc(n.title)}</strong>${Number(n.count || 1) > 1 ? `<span class="count-badge">×${n.count}</span>` : ''}</div><p>${esc(n.message)}</p><div class="notif-actions">${actionHtml(n)}${!n.read ? `<button class="quiet-action" data-notif-read="${n.id}">Lu</button>` : ''}${n.actionType !== 'approval' && n.actionType !== 'plan' && !['deadline','blocker'].includes(n.type) ? `<button class="quiet-action" data-resolve="${n.id}">Résoudre</button>` : ''}</div></div></article>`).join('') || '<div class="empty-state">Aucune notification dans ce filtre.</div>'}
     </div>
   </aside>`;
 }
+
 function renderPlanningModal(taskId) {
   const t = task(taskId);
   if (!t) return '';
@@ -629,7 +764,7 @@ function renderProjectModal() {
       <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" value="${esc(existing?.name || '')}" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
       <div class="form-field form-field-full"><span>Responsable — clique sur une personne</span>${teamPicker('projectOwner', owner)}</div>
       <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-      <label class="form-field"><span>État</span><select id="projectStatus">${Object.entries(statusLabels).map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field"><span>État</span><select id="projectStatus">${Object.entries(statusLabels).filter(([value]) => existing || value !== 'completed').map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field form-field-full range-field"><span>Progression <output id="projectProgressValue">${progress} %</output></span><input id="projectProgress" type="range" min="0" max="100" step="5" value="${progress}" /></label>
       <label class="form-field form-field-full"><span>Blocage actuel</span><input id="projectBlocker" type="text" value="${esc(existing?.blocker || '')}" placeholder="Laisser vide s’il n’y a aucun blocage" maxlength="180" /></label>
       <label class="form-field form-field-full"><span>Prochaine action</span><input id="projectNextAction" type="text" value="${esc(existing?.nextAction || '')}" placeholder="Ex. Définir le cahier fonctionnel" maxlength="160" /></label>
@@ -640,22 +775,40 @@ function renderProjectModal() {
 
 function renderAiSimulationModal() {
   return `<div class="modal-backdrop" id="aiSimulationBackdrop"></div><div class="modal-card form-modal ai-demo-modal" role="dialog" aria-modal="true">
-    <header><div><small>SIMULATION IA</small><h2>Recevoir une mise à jour</h2></div><button class="icon-btn" id="closeAiSimulation">×</button></header>
-    <div class="ai-demo-intro"><span>✦</span><p>Cette démo reproduit le futur flux : ChatGPT ou Claude crée un nouvel élément, puis SpeedArti Pilotage te demande où le placer dans la Roadmap.</p></div>
+    <header><div><small>SIMULATION IA</small><h2>Tester les flux automatiques</h2></div><button class="icon-btn" id="closeAiSimulation">×</button></header>
+    <div class="ai-demo-intro"><span>✦</span><p>Teste plusieurs cas réalistes : nouvelle tâche, progression automatique, blocage, demande de clôture ou erreur technique.</p></div>
     <div class="form-grid">
-      <label class="form-field form-field-full"><span>Source</span><select id="aiSource">
-        ${Object.entries(aiSourceLabels).map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}
+      <label class="form-field form-field-full"><span>Type de mise à jour</span><select id="aiMode">
+        <option value="new_task">Nouvelle tâche importante → à planifier</option>
+        <option value="routine_progress">Progression normale → automatique</option>
+        <option value="blocker">Nouveau blocage → automatique + alerte</option>
+        <option value="complete_project">Projet proposé comme terminé → validation Thibault</option>
+        <option value="technical_error">Erreur technique → notification regroupée</option>
       </select></label>
-      <label class="form-field form-field-full"><span>Nouvel élément détecté</span><input id="aiTaskTitle" type="text" value="Ajouter le contrôle automatique des marges" maxlength="120" /></label>
+      <label class="form-field form-field-full"><span>Source</span><select id="aiSource">${Object.entries(aiSourceLabels).map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
-      <div class="form-field form-field-full"><span>Responsable proposé</span>${teamPicker('aiOwner', state.currentUser.id)}</div>
-      <label class="form-field"><span>Priorité proposée</span><select id="aiPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-      <label class="form-field form-field-full"><span>Suggestion IA pour la Roadmap</span><select id="aiSuggestedBucket">
-        ${['this_week','this_month','next_3_months','later','backlog'].map(value => `<option value="${value}" ${value === 'this_month' ? 'selected' : ''}>${planningLabels[value]}</option>`).join('')}
-      </select></label>
+      <label class="form-field form-field-full" data-ai-section="detail"><span id="aiDetailLabel">Nouvel élément détecté</span><input id="aiTaskTitle" type="text" value="Ajouter le contrôle automatique des marges" maxlength="180" /></label>
+      <label class="form-field" data-ai-section="progress"><span>Nouvelle progression</span><input id="aiProgress" type="number" min="0" max="100" step="5" value="80" /></label>
+      <div class="form-field form-field-full" data-ai-section="new-task"><span>Responsable proposé</span>${teamPicker('aiOwner', state.currentUser.id)}</div>
+      <label class="form-field" data-ai-section="new-task"><span>Priorité proposée</span><select id="aiPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full" data-ai-section="new-task"><span>Suggestion IA pour la Roadmap</span><select id="aiSuggestedBucket">${['this_week','this_month','next_3_months','later','backlog'].map(value => `<option value="${value}" ${value === 'this_month' ? 'selected' : ''}>${planningLabels[value]}</option>`).join('')}</select></label>
     </div>
-    <div class="ai-demo-rule"><strong>Règle :</strong> l’IA suggère une période, mais elle ne décide jamais à ta place.</div>
-    <footer><button class="secondary-btn" id="cancelAiSimulation">Annuler</button><button class="primary-btn ai-submit-btn" id="runAiSimulation">Simuler l’arrivée</button></footer>
+    <div class="ai-demo-rule" id="aiRuleText"><strong>Règle :</strong> l’IA suggère une période, mais elle ne décide jamais à ta place.</div>
+    <footer><button class="secondary-btn" id="cancelAiSimulation">Annuler</button><button class="primary-btn ai-submit-btn" id="runAiSimulation">Simuler</button></footer>
+  </div>`;
+}
+
+function renderApprovalModal(requestId) {
+  const request = state.changeRequests.find(r => r.id === requestId);
+  const p = request ? project(request.projectId) : null;
+  if (!request || !p) return '';
+  return `<div class="modal-backdrop" id="approvalBackdrop"></div><div class="modal-card approval-modal" role="dialog" aria-modal="true">
+    <header><div><small>VALIDATION HUMAINE</small><h2>Passer le projet en Terminé ?</h2></div><button class="icon-btn" id="closeApproval">×</button></header>
+    <div class="approval-project"><span class="status-dot status-${p.status}"></span><div><strong>${esc(p.name)}</strong><small>État actuel : ${esc(statusLabels[p.status])} · ${p.progress} %</small></div></div>
+    <div class="approval-summary"><div><small>Demandé par</small><strong>${esc(request.requestedBy)}</strong></div><div><small>Action proposée</small><strong>Terminé · 100 %</strong></div></div>
+    ${request.note ? `<p class="approval-note">${esc(request.note)}</p>` : ''}
+    <p class="form-note">La progression peut évoluer automatiquement, mais le passage officiel du projet en <strong>Terminé</strong> demande une décision humaine.</p>
+    <footer><button class="danger-ghost-btn" id="rejectApproval" data-request="${request.id}">Refuser</button><button class="primary-btn" id="approveApproval" data-request="${request.id}">Valider le passage en Terminé</button></footer>
   </div>`;
 }
 
@@ -678,6 +831,8 @@ function renderSearchOverlay() {
 }
 
 function render() {
+  ensureRuntimeState();
+  refreshSmartNotifications();
   let content;
   switch (currentPage) {
     case 'planning': content = renderPlanning(); break;
@@ -734,7 +889,62 @@ function resolveNotification(id) {
   if (!n) return;
   n.read = true;
   n.resolved = true;
+  n.readAt = n.readAt || new Date().toISOString();
+  n.resolvedAt = new Date().toISOString();
   persist(TAGS.NOTIF_RESOLVE, 'Notification résolue', { id });
+  render();
+}
+
+function markNotificationRead(id, shouldRender = true) {
+  const n = state.notifications.find(x => x.id === id);
+  if (!n) return;
+  n.read = true;
+  n.readAt = new Date().toISOString();
+  persist(TAGS.NOTIF_READ, 'Notification lue', { id });
+  if (shouldRender) render();
+}
+
+function openApproval(requestId) {
+  const request = state.changeRequests.find(r => r.id === requestId && r.status === 'pending');
+  if (!request) return;
+  approvalRequestId = requestId;
+  notificationOpen = false;
+  state.notifications.filter(n => n.changeRequestId === requestId).forEach(n => { n.read = true; n.readAt = new Date().toISOString(); });
+  trace(TAGS.APPROVAL_MODAL, 'Ouverture validation projet', { requestId, projectId:request.projectId });
+  saveState(state);
+  render();
+}
+
+function closeApproval() {
+  approvalRequestId = null;
+  render();
+}
+
+function decideApproval(requestId, approved) {
+  const request = state.changeRequests.find(r => r.id === requestId && r.status === 'pending');
+  if (!request) return;
+  const p = project(request.projectId);
+  if (!p) return;
+  request.status = approved ? 'approved' : 'rejected';
+  request.decidedAt = new Date().toISOString();
+  request.decidedBy = state.currentUser.id;
+  if (approved) {
+    p.status = 'completed';
+    p.progress = 100;
+    p.blocker = '';
+    p.nextAction = 'Projet clôturé';
+    p.updatedAt = new Date().toISOString();
+    addActivity({ projectId:p.id, text:'Projet validé comme Terminé', internalTag:TAGS.PROJECT_COMPLETE_APPROVE });
+    trace(TAGS.PROJECT_COMPLETE_APPROVE, 'Clôture projet approuvée', { projectId:p.id, requestId });
+  } else {
+    addActivity({ projectId:p.id, text:'Passage en Terminé refusé', internalTag:TAGS.PROJECT_COMPLETE_REJECT });
+    trace(TAGS.PROJECT_COMPLETE_REJECT, 'Clôture projet refusée', { projectId:p.id, requestId });
+  }
+  state.notifications.filter(n => n.changeRequestId === requestId).forEach(n => {
+    n.read = true; n.resolved = true; n.readAt = n.readAt || new Date().toISOString(); n.resolvedAt = new Date().toISOString();
+  });
+  approvalRequestId = null;
+  persist(approved ? TAGS.PROJECT_COMPLETE_APPROVE : TAGS.PROJECT_COMPLETE_REJECT, 'Décision validation projet', { projectId:p.id, requestId, approved });
   render();
 }
 
@@ -851,12 +1061,16 @@ function createProjectFromForm() {
     if (!existing) return;
     const oldOwner = existing.owner;
     const oldProgress = Number(existing.progress || 0);
-    Object.assign(existing, { name, owner, priority, status, progress, blocker, nextAction, updatedAt:new Date().toISOString() });
+    const requestedCompletion = status === 'completed' && existing.status !== 'completed';
+    const savedStatus = requestedCompletion ? existing.status : status;
+    const savedProgress = progress;
+    Object.assign(existing, { name, owner, priority, status:savedStatus, progress:savedProgress, blocker, nextAction, updatedAt:new Date().toISOString() });
     existing.members = [...new Set([...(existing.members || []), state.currentUser.id, owner])];
-    addActivity({ projectId: existing.id, text: `Projet mis à jour · ${progress} % · ${statusLabels[status]}`, internalTag: TAGS.PROJECT_EDIT });
+    addActivity({ projectId: existing.id, text: `Projet mis à jour · ${savedProgress} % · ${statusLabels[savedStatus]}`, internalTag: TAGS.PROJECT_EDIT });
+    if (requestedCompletion) { const request = queueProjectCompletion(existing.id, { sourceType:'manual', requestedBy:'Thibault', note:'Demande effectuée depuis la fiche projet' }); if (request) approvalRequestId = request.id; }
     if (oldOwner !== owner) addActivity({ projectId: existing.id, text: `Responsable projet : ${teamName(owner)}`, internalTag: TAGS.PROJECT_OWNER });
     if (oldProgress !== progress) addActivity({ projectId: existing.id, text: `Progression : ${oldProgress} % → ${progress} %`, internalTag: TAGS.PROJECT_PROGRESS });
-    persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, priority, status, progress, blocker });
+    persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, priority, status:existing.status, progress:existing.progress, blocker });
   } else {
     const id = crypto.randomUUID();
     const newProject = { id, name, owner, members:[...new Set([state.currentUser.id, owner])], status, priority, progress, blocker, nextAction, updatedAt:new Date().toISOString() };
@@ -923,72 +1137,87 @@ function closeAiSimulation() {
   render();
 }
 
+function syncAiSimulationFields() {
+  const mode = document.querySelector('#aiMode')?.value || 'new_task';
+  document.querySelectorAll('[data-ai-section="new-task"]').forEach(el => el.hidden = mode !== 'new_task');
+  document.querySelectorAll('[data-ai-section="progress"]').forEach(el => el.hidden = mode !== 'routine_progress');
+  const detail = document.querySelector('[data-ai-section="detail"]');
+  if (detail) detail.hidden = mode === 'complete_project' || mode === 'routine_progress';
+  const label = document.querySelector('#aiDetailLabel');
+  const input = document.querySelector('#aiTaskTitle');
+  const rule = document.querySelector('#aiRuleText');
+  if (mode === 'new_task') { if(label) label.textContent='Nouvel élément détecté'; if(input) input.value='Ajouter le contrôle automatique des marges'; if(rule) rule.innerHTML='<strong>Règle :</strong> l’IA suggère une période, mais elle ne décide jamais à ta place.'; }
+  if (mode === 'blocker') { if(label) label.textContent='Blocage détecté'; if(input) input.value='Accès fournisseur indisponible'; if(rule) rule.innerHTML='<strong>Règle :</strong> un blocage opérationnel est enregistré automatiquement et remonte dans les alertes.'; }
+  if (mode === 'complete_project') { if(rule) rule.innerHTML='<strong>Règle :</strong> l’IA ne peut pas terminer officiellement un projet. Une validation Thibault est obligatoire.'; }
+  if (mode === 'technical_error') { if(label) label.textContent='Erreur technique'; if(input) input.value='Échec de synchronisation de la mise à jour'; if(rule) rule.innerHTML='<strong>Anti-spam :</strong> les erreurs identiques sont regroupées dans une seule notification avec un compteur.'; }
+  if (mode === 'routine_progress') { if(rule) rule.innerHTML='<strong>Règle :</strong> une progression normale est appliquée automatiquement et ajoutée à l’historique.'; }
+}
+
 function simulateAiIncoming() {
+  const mode = document.querySelector('#aiMode')?.value || 'new_task';
   const source = document.querySelector('#aiSource')?.value || 'chatgpt_thibault';
-  const titleInput = document.querySelector('#aiTaskTitle');
-  const title = titleInput?.value.trim();
-  if (!title) {
-    titleInput?.classList.add('field-error');
-    titleInput?.focus();
+  const projectId = document.querySelector('#aiProject')?.value || null;
+  const title = document.querySelector('#aiTaskTitle')?.value.trim() || '';
+  const actor = aiSourceActor(source);
+  trace(TAGS.AI_REQUEST_RECEIVED, 'Mise à jour IA reçue (simulation)', { mode, source, projectId });
+
+  if (mode !== 'new_task' && mode !== 'technical_error' && !projectId) {
+    document.querySelector('#aiProject')?.classList.add('field-error');
+    document.querySelector('#aiProject')?.focus();
     return;
   }
-  const projectId = document.querySelector('#aiProject')?.value || null;
-  const assignedTo = document.querySelector('#aiOwner')?.value || state.currentUser.id;
-  const priority = document.querySelector('#aiPriority')?.value || 'medium';
-  const suggestedBucket = document.querySelector('#aiSuggestedBucket')?.value || 'this_month';
-  const taskId = crypto.randomUUID();
-  const notificationId = crypto.randomUUID();
 
-  trace(TAGS.AI_REQUEST_RECEIVED, 'Mise à jour IA reçue (simulation)', { source, projectId, taskId });
+  if (mode === 'new_task') {
+    const titleInput = document.querySelector('#aiTaskTitle');
+    if (!title) { titleInput?.classList.add('field-error'); titleInput?.focus(); return; }
+    const assignedTo = document.querySelector('#aiOwner')?.value || state.currentUser.id;
+    const priority = document.querySelector('#aiPriority')?.value || 'medium';
+    const suggestedBucket = document.querySelector('#aiSuggestedBucket')?.value || 'this_month';
+    const taskId = crypto.randomUUID();
+    state.tasks.push({ id:taskId, title, projectId, assignedTo, status:'todo', priority, scheduledFor:null, dueAt:null, planningStatus:'unplanned', planningBucket:'backlog', suggestedBucket, needsPlanning:true, sortOrder:Date.now(), sourceType:aiSourceType(source), sourceAgent:source, createdAt:new Date().toISOString() });
+    const notification = upsertNotification({ severity:'action', type:'planning_required', title:'Nouvel élément à planifier', message:title, actionType:'plan', taskId, projectId, groupKey:`planning:${taskId}`, internalTag:TAGS.NOTIF_PLAN });
+    state.activity.unshift({ id:crypto.randomUUID(), at:new Date().toISOString(), actor, projectId, text:`Nouvel élément proposé : ${title}`, internalTag:TAGS.AI_REQUEST_RECEIVED });
+    trace(TAGS.PLAN_DETECT, 'Nouvel élément IA à planifier', { taskId, suggestedBucket });
+    persist(TAGS.AI_REQUEST_PROCESS, 'Mise à jour IA transformée en tâche à planifier', { source, taskId, notificationId:notification.id, suggestedBucket });
+    aiSimulationOpen = false; currentPage = 'planning'; planningTaskId = taskId; render(); return;
+  }
 
-  state.tasks.push({
-    id: taskId,
-    title,
-    projectId,
-    assignedTo,
-    status: 'todo',
-    priority,
-    scheduledFor: null,
-    dueAt: null,
-    planningStatus: 'unplanned',
-    planningBucket: 'backlog',
-    suggestedBucket,
-    needsPlanning: true,
-    sortOrder: Date.now(),
-    sourceType: aiSourceType(source),
-    sourceAgent: source,
-    createdAt: new Date().toISOString()
-  });
+  if (mode === 'routine_progress') {
+    const p = project(projectId); if (!p) return;
+    const previous = Number(p.progress || 0);
+    const next = Math.max(0, Math.min(100, Number(document.querySelector('#aiProgress')?.value || previous)));
+    p.progress = next; p.updatedAt = new Date().toISOString();
+    addActivity({ actor, projectId, text:`Progression : ${previous} % → ${next} %`, internalTag:TAGS.AI_ROUTINE_UPDATE });
+    persist(TAGS.AI_ROUTINE_UPDATE, 'Progression IA appliquée automatiquement', { source, projectId, previous, next });
+    aiSimulationOpen = false; selectedProjectId = projectId; currentPage = 'projects'; render(); return;
+  }
 
-  state.notifications.unshift({
-    id: notificationId,
-    severity: 'action',
-    type: 'planning_required',
-    title: 'Nouvel élément à planifier',
-    message: title,
-    taskId,
-    actionType: 'plan',
-    read: false,
-    resolved: false,
-    internalTag: TAGS.NOTIF_PLAN
-  });
+  if (mode === 'blocker') {
+    const p = project(projectId); if (!p) return;
+    const blocker = title || 'Blocage signalé par l’IA';
+    p.blocker = blocker; p.status = 'blocked'; p.updatedAt = new Date().toISOString();
+    addActivity({ actor, projectId, text:`Blocage ajouté : ${blocker}`, internalTag:TAGS.AI_BLOCKER_UPDATE });
+    upsertNotification({ severity:'warning', type:'blocker', title:'Blocage projet', message:`${p.name} · ${blocker}`, actionType:'open_project', projectId, groupKey:`blocker:${projectId}`, internalTag:TAGS.NOTIF_BLOCKER, reactivate:true });
+    persist(TAGS.AI_BLOCKER_UPDATE, 'Blocage IA appliqué automatiquement', { source, projectId, blocker });
+    aiSimulationOpen = false; selectedProjectId = projectId; currentPage = 'projects'; render(); return;
+  }
 
-  state.activity.unshift({
-    id: crypto.randomUUID(),
-    at: new Date().toISOString(),
-    actor: aiSourceActor(source),
-    projectId,
-    text: `Nouvel élément proposé : ${title}`,
-    internalTag: TAGS.AI_REQUEST_RECEIVED
-  });
+  if (mode === 'complete_project') {
+    trace(TAGS.AI_COMPLETE_PROPOSAL, 'IA propose la clôture du projet', { source, projectId });
+    const request = queueProjectCompletion(projectId, { sourceType:aiSourceType(source), requestedBy:actor, note:'Proposition reçue via agent IA' });
+    aiSimulationOpen = false;
+    if (request) approvalRequestId = request.id;
+    render(); return;
+  }
 
-  trace(TAGS.PLAN_DETECT, 'Nouvel élément IA à planifier', { taskId, suggestedBucket });
-  persist(TAGS.AI_REQUEST_PROCESS, 'Mise à jour IA transformée en tâche à planifier', { source, taskId, notificationId, suggestedBucket });
-
-  aiSimulationOpen = false;
-  currentPage = 'planning';
-  planningTaskId = taskId;
-  render();
+  if (mode === 'technical_error') {
+    const message = title || 'Échec technique pendant une mise à jour IA';
+    const groupKey = `tech:${source}:${projectId || 'global'}`;
+    const n = upsertNotification({ severity:'error', type:'ai_error', title:'Erreur de synchronisation IA', message, actionType:'retry', projectId, groupKey, internalTag:TAGS.NOTIF_TECH_ERROR, increment:true });
+    addActivity({ actor, projectId, text:`Erreur technique détectée : ${message}`, internalTag:TAGS.AI_TECH_ERROR });
+    persist(TAGS.AI_TECH_ERROR, 'Erreur IA regroupée', { source, projectId, groupKey, count:n.count });
+    aiSimulationOpen = false; notificationOpen = true; notificationFilter = 'error'; render();
+  }
 }
 
 function bindEvents() {
@@ -997,6 +1226,8 @@ function bindEvents() {
   document.querySelector('#cancelAiSimulation')?.addEventListener('click', closeAiSimulation);
   document.querySelector('#aiSimulationBackdrop')?.addEventListener('click', closeAiSimulation);
   document.querySelector('#runAiSimulation')?.addEventListener('click', simulateAiIncoming);
+  document.querySelector('#aiMode')?.addEventListener('change', syncAiSimulationFields);
+  if (aiSimulationOpen) requestAnimationFrame(syncAiSimulationFields);
   document.querySelector('#aiTaskTitle')?.addEventListener('keydown', e => { if (e.key === 'Enter') simulateAiIncoming(); });
 
   document.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.page)));
@@ -1015,6 +1246,10 @@ function bindEvents() {
     trace(TAGS.TEAM_PICKER, 'Sélection responsable', { target, userId:el.dataset.teamValue });
   }));
   document.querySelectorAll('[data-resolve]').forEach(el => el.addEventListener('click', () => resolveNotification(el.dataset.resolve)));
+  document.querySelectorAll('[data-notif-read]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); markNotificationRead(el.dataset.notifRead); }));
+  document.querySelectorAll('[data-approval]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openApproval(el.dataset.approval); }));
+  document.querySelectorAll('[data-open-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const id=el.dataset.openProject; const notifId=el.dataset.notifRead; if(notifId) markNotificationRead(notifId, false); selectedProjectId=id; currentPage='projects'; notificationOpen=false; render(); }));
+  document.querySelectorAll('[data-notif-open-filter]').forEach(el => el.addEventListener('click', () => { notificationFilter=el.dataset.notifOpenFilter || 'all'; notificationOpen=true; render(); }));
 
   document.querySelectorAll('[data-project-filter]').forEach(el => el.addEventListener('click', () => { projectFilter = el.dataset.projectFilter; render(); }));
   document.querySelectorAll('[data-activity-filter]').forEach(el => el.addEventListener('click', () => { activityFilter = el.dataset.activityFilter; render(); }));
@@ -1080,6 +1315,11 @@ function bindEvents() {
   document.querySelector('#documentModalBackdrop')?.addEventListener('click', closeDocumentModal);
   document.querySelector('#saveDocument')?.addEventListener('click', createDocumentFromForm);
 
+  document.querySelector('#closeApproval')?.addEventListener('click', closeApproval);
+  document.querySelector('#approvalBackdrop')?.addEventListener('click', closeApproval);
+  document.querySelector('#approveApproval')?.addEventListener('click', e => decideApproval(e.currentTarget.dataset.request, true));
+  document.querySelector('#rejectApproval')?.addEventListener('click', e => decideApproval(e.currentTarget.dataset.request, false));
+
   document.querySelector('#resetDemo')?.addEventListener('click', () => {
     state = resetState();
     currentPage = 'today';
@@ -1102,6 +1342,7 @@ function bindEvents() {
     documentSearch = '';
     documentProjectFilter = 'all';
     documentModalOpen = false;
+    approvalRequestId = null;
     mobilePlanningBucket = 'this_month';
     render();
   });
