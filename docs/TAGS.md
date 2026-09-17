@@ -27,3 +27,23 @@ Les balises sont **internes et invisibles dans l'interface utilisateur**. Elles 
 2. Toute nouvelle fonction importante reçoit une balise avant intégration.
 3. Une erreur technique doit enregistrer la balise de la fonction concernée.
 4. Les balises ne sont jamais rendues dans les composants visuels finaux.
+
+
+### PILOT-UI-010 — Système de code couleur visuel V2
+Palette, statuts, priorités, roadmap, notifications, agenda et documents. Invisible dans l’interface comme balise technique.
+
+
+## V3 — Actions manuelles et filtres
+
+| Balise | Fonction | Visible UI |
+|---|---|---|
+| `PILOT-TASK-001` | Création manuelle d’une tâche | Non |
+| `PILOT-PROJ-001` | Création manuelle d’un projet | Non |
+| `PILOT-UI-011` | Fenêtre d’ajout rapide d’une tâche | Non |
+| `PILOT-UI-012` | Fenêtre de création d’un projet | Non |
+| `PILOT-UI-013` | Filtrage de la liste des projets | Non |
+| `PILOT-UI-014` | Filtres de la Roadmap | Non |
+| `PILOT-UI-015` | Filtres du journal d’activité | Non |
+| `PILOT-UI-016` | Filtres du centre de notifications | Non |
+
+Ces balises restent strictement internes et ne doivent jamais être affichées dans l’interface finale.
