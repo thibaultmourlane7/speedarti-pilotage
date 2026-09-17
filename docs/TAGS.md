@@ -92,3 +92,33 @@ Dans la vraie version, la simulation sera remplacée par l’API sécurisée san
 ### Règle V5
 
 L’assignation ne dépend plus d’un simple menu déroulant : Thibault, Anne-Sophie et Guillaume sont proposés sous forme de choix visuels cliquables. La valeur sélectionnée reste une donnée structurée interne (`assignedTo` / `owner`) et les balises restent invisibles dans l’interface.
+
+## V6 — Validations humaines, alertes intelligentes et IA multi-scénarios
+
+| Balise | Fonction | Visible UI |
+|---|---|---|
+| `PILOT-PROJ-005` | Créer une demande de passage d’un projet en Terminé | Non |
+| `PILOT-PROJ-006` | Valider officiellement un projet comme Terminé | Non |
+| `PILOT-PROJ-007` | Refuser une demande de clôture projet | Non |
+| `PILOT-UI-025` | Fenêtre de validation humaine | Non (balise) |
+| `PILOT-UI-026` | Synthèse visuelle des alertes du jour | Non (balise) |
+| `PILOT-AI-012` | Appliquer automatiquement une progression IA routinière | Non |
+| `PILOT-AI-013` | Enregistrer automatiquement un blocage signalé par IA | Non |
+| `PILOT-AI-014` | Proposition IA de clôture projet | Non |
+| `PILOT-AI-015` | Erreur technique lors d’un flux IA | Non |
+| `PILOT-NOTIF-001` | Création d’une notification | Non |
+| `PILOT-NOTIF-004` | Notification d’erreur technique | Non |
+| `PILOT-NOTIF-006` | Notification de validation requise | Non |
+| `PILOT-NOTIF-007` | Notification d’échéance dépassée | Non |
+| `PILOT-NOTIF-008` | Notification de blocage | Non |
+| `PILOT-NOTIF-010` | Regroupement / déduplication des notifications | Non |
+
+### Règles V6
+
+- Une progression de projet peut être mise à jour automatiquement par un agent IA.
+- Un blocage opérationnel peut être enregistré automatiquement, avec alerte visible.
+- Un agent IA ne peut jamais passer directement un projet en `completed` : une demande de validation est créée.
+- Le passage officiel en `completed` est séparé du pourcentage de progression et nécessite une décision humaine.
+- `read` / `readAt` signifie que la notification a été vue ; `resolved` / `resolvedAt` signifie que le problème ou l’action a réellement été traité.
+- Les erreurs techniques identiques sont regroupées par `groupKey` pour éviter le spam ; un compteur conserve le nombre d’occurrences.
+- Les échéances dépassées et blocages actifs génèrent au maximum une notification active par élément grâce à la déduplication.
