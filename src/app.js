@@ -15,6 +15,7 @@ let planningFilterOwner = 'all';
 let planningFilterPriority = 'all';
 let activityFilter = 'all';
 let notificationFilter = 'all';
+let aiSimulationOpen = false;
 
 const app = document.querySelector('#app');
 
@@ -35,6 +36,22 @@ const priorityLabels = { urgent: 'Urgente', high: 'Haute', medium: 'Moyenne', lo
 const planningLabels = {
   backlog: 'À organiser', this_week: 'Cette semaine', this_month: 'Ce mois', next_3_months: '1 à 3 mois', later: 'Plus tard'
 };
+
+const aiSourceLabels = {
+  chatgpt_thibault: 'ChatGPT · Thibault',
+  claude_anne_sophie: 'Claude · Anne-Sophie',
+  chatgpt_guillaume: 'ChatGPT · Guillaume'
+};
+
+function aiSourceActor(source) {
+  if (source === 'claude_anne_sophie') return 'Anne-Sophie via Claude';
+  if (source === 'chatgpt_guillaume') return 'Guillaume via ChatGPT';
+  return 'Thibault via ChatGPT';
+}
+
+function aiSourceType(source) {
+  return source.startsWith('claude') ? 'claude' : 'chatgpt';
+}
 
 function esc(value = '') {
   return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -77,6 +94,7 @@ function layout(content) {
         <header class="topbar">
           <div class="mobile-brand">SpeedArti <span>Pilotage</span></div>
           <div class="top-actions">
+            <button class="demo-ai-btn" id="simulateAiBtn" title="Simuler une mise à jour ChatGPT ou Claude"><span>✦</span><b>IA démo</b></button>
             <button class="icon-btn search-btn" id="searchBtn" aria-label="Rechercher">⌕</button>
             <button class="icon-btn notif-btn" id="notificationBtn" aria-label="Notifications">♢${unread ? `<b>${unread}</b>` : ''}</button>
             <button class="avatar" title="Thibault">${esc(state.currentUser.initials)}</button>
@@ -93,6 +111,7 @@ function layout(content) {
       ${planningTaskId ? renderPlanningModal(planningTaskId) : ''}
       ${taskModalOpen ? renderTaskModal() : ''}
       ${projectModalOpen ? renderProjectModal() : ''}
+      ${aiSimulationOpen ? renderAiSimulationModal() : ''}
     </div>
   `;
 }
@@ -311,7 +330,7 @@ function renderPlanningModal(taskId) {
   return `<div class="modal-backdrop" id="modalBackdrop"></div><div class="modal-card" role="dialog" aria-modal="true">
     <header><div><small>NOUVEL ÉLÉMENT</small><h2>Planifier cette tâche</h2></div><button class="icon-btn" id="closePlan">×</button></header>
     <div class="modal-task"><strong>${esc(t.title)}</strong><span>${esc(project(t.projectId)?.name || 'Projet à définir')}</span></div>
-    <div class="meta-grid"><div><small>Responsable proposé</small><strong>${esc(teamName(t.assignedTo))}</strong></div><div><small>Priorité</small><strong>${esc(priorityLabels[t.priority])}</strong></div></div>
+    <div class="meta-grid"><div><small>Responsable proposé</small><strong>${esc(teamName(t.assignedTo))}</strong></div><div><small>Priorité</small><strong>${esc(priorityLabels[t.priority])}</strong></div>${t.sourceType ? `<div class="meta-wide"><small>Origine</small><strong>${esc(t.sourceType === 'claude' ? 'Claude' : t.sourceType === 'chatgpt' ? 'ChatGPT' : t.sourceType)}</strong></div>` : ''}</div>
     <fieldset class="plan-options"><legend>Quand veux-tu le prévoir ?</legend>
       ${['this_week','this_month','next_3_months','later','backlog'].map(bucket => `<label><input type="radio" name="planBucket" value="${bucket}" ${bucket === 'backlog' ? 'checked' : ''}/><span>${planningLabels[bucket]}</span></label>`).join('')}
     </fieldset>
@@ -360,6 +379,27 @@ function renderProjectModal() {
       <label class="form-field form-field-full"><span>Prochaine action</span><input id="projectNextAction" type="text" placeholder="Ex. Définir le cahier fonctionnel" maxlength="160" /></label>
     </div>
     <footer><button class="secondary-btn" id="cancelProjectModal">Annuler</button><button class="primary-btn" id="saveProject">Créer le projet</button></footer>
+  </div>`;
+}
+
+function renderAiSimulationModal() {
+  return `<div class="modal-backdrop" id="aiSimulationBackdrop"></div><div class="modal-card form-modal ai-demo-modal" role="dialog" aria-modal="true">
+    <header><div><small>SIMULATION IA</small><h2>Recevoir une mise à jour</h2></div><button class="icon-btn" id="closeAiSimulation">×</button></header>
+    <div class="ai-demo-intro"><span>✦</span><p>Cette démo reproduit le futur flux : ChatGPT ou Claude crée un nouvel élément, puis SpeedArti Pilotage te demande où le placer dans la Roadmap.</p></div>
+    <div class="form-grid">
+      <label class="form-field form-field-full"><span>Source</span><select id="aiSource">
+        ${Object.entries(aiSourceLabels).map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}
+      </select></label>
+      <label class="form-field form-field-full"><span>Nouvel élément détecté</span><input id="aiTaskTitle" type="text" value="Ajouter le contrôle automatique des marges" maxlength="120" /></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="aiProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Responsable proposé</span><select id="aiOwner">${state.team.map(m => `<option value="${m.id}" ${m.id === state.currentUser.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+      <label class="form-field"><span>Priorité proposée</span><select id="aiPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === 'medium' ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Suggestion IA pour la Roadmap</span><select id="aiSuggestedBucket">
+        ${['this_week','this_month','next_3_months','later','backlog'].map(value => `<option value="${value}" ${value === 'this_month' ? 'selected' : ''}>${planningLabels[value]}</option>`).join('')}
+      </select></label>
+    </div>
+    <div class="ai-demo-rule"><strong>Règle :</strong> l’IA suggère une période, mais elle ne décide jamais à ta place.</div>
+    <footer><button class="secondary-btn" id="cancelAiSimulation">Annuler</button><button class="primary-btn ai-submit-btn" id="runAiSimulation">Simuler l’arrivée</button></footer>
   </div>`;
 }
 
@@ -541,7 +581,98 @@ function createProjectFromForm() {
   render();
 }
 
+function openAiSimulation() {
+  aiSimulationOpen = true;
+  taskModalOpen = false;
+  projectModalOpen = false;
+  planningTaskId = null;
+  notificationOpen = false;
+  trace(TAGS.AI_SIMULATION_MODAL, 'Ouverture simulation IA');
+  render();
+  requestAnimationFrame(() => document.querySelector('#aiTaskTitle')?.focus());
+}
+
+function closeAiSimulation() {
+  aiSimulationOpen = false;
+  render();
+}
+
+function simulateAiIncoming() {
+  const source = document.querySelector('#aiSource')?.value || 'chatgpt_thibault';
+  const titleInput = document.querySelector('#aiTaskTitle');
+  const title = titleInput?.value.trim();
+  if (!title) {
+    titleInput?.classList.add('field-error');
+    titleInput?.focus();
+    return;
+  }
+  const projectId = document.querySelector('#aiProject')?.value || null;
+  const assignedTo = document.querySelector('#aiOwner')?.value || state.currentUser.id;
+  const priority = document.querySelector('#aiPriority')?.value || 'medium';
+  const suggestedBucket = document.querySelector('#aiSuggestedBucket')?.value || 'this_month';
+  const taskId = crypto.randomUUID();
+  const notificationId = crypto.randomUUID();
+
+  trace(TAGS.AI_REQUEST_RECEIVED, 'Mise à jour IA reçue (simulation)', { source, projectId, taskId });
+
+  state.tasks.push({
+    id: taskId,
+    title,
+    projectId,
+    assignedTo,
+    status: 'todo',
+    priority,
+    scheduledFor: null,
+    dueAt: null,
+    planningStatus: 'unplanned',
+    planningBucket: 'backlog',
+    suggestedBucket,
+    needsPlanning: true,
+    sortOrder: Date.now(),
+    sourceType: aiSourceType(source),
+    sourceAgent: source,
+    createdAt: new Date().toISOString()
+  });
+
+  state.notifications.unshift({
+    id: notificationId,
+    severity: 'action',
+    type: 'planning_required',
+    title: 'Nouvel élément à planifier',
+    message: title,
+    taskId,
+    actionType: 'plan',
+    read: false,
+    resolved: false,
+    internalTag: TAGS.NOTIF_PLAN
+  });
+
+  state.activity.unshift({
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    actor: aiSourceActor(source),
+    projectId,
+    text: `Nouvel élément proposé : ${title}`,
+    internalTag: TAGS.AI_REQUEST_RECEIVED
+  });
+
+  trace(TAGS.PLAN_DETECT, 'Nouvel élément IA à planifier', { taskId, suggestedBucket });
+  persist(TAGS.AI_REQUEST_PROCESS, 'Mise à jour IA transformée en tâche à planifier', { source, taskId, notificationId, suggestedBucket });
+
+  aiSimulationOpen = false;
+  currentPage = 'planning';
+  planningTaskId = taskId;
+  render();
+}
+
 function bindEvents() {
+  document.querySelector('#simulateAiBtn')?.addEventListener('click', openAiSimulation);
+  document.querySelector('#closeAiSimulation')?.addEventListener('click', closeAiSimulation);
+  document.querySelector('#cancelAiSimulation')?.addEventListener('click', closeAiSimulation);
+  document.querySelector('#aiSimulationBackdrop')?.addEventListener('click', closeAiSimulation);
+  document.querySelector('#runAiSimulation')?.addEventListener('click', simulateAiIncoming);
+  document.querySelector('#aiTaskTitle')?.addEventListener('keydown', e => { if (e.key === 'Enter') simulateAiIncoming(); });
+
   document.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.page)));
   document.querySelectorAll('[data-mobile-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.mobilePage)));
   document.querySelectorAll('[data-project]').forEach(el => el.addEventListener('click', () => { selectedProjectId = el.dataset.project; currentPage = 'projects'; render(); }));
@@ -606,6 +737,7 @@ function bindEvents() {
     planningFilterPriority = 'all';
     activityFilter = 'all';
     notificationFilter = 'all';
+    aiSimulationOpen = false;
     render();
   });
 

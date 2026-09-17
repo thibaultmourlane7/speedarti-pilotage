@@ -445,3 +445,64 @@ button { cursor: pointer; }
   .form-field-full { grid-column: auto; }
   .form-modal { width: 100%; }
 }
+
+
+/* =========================================================
+   PILOT-UI-017 / PILOT-AI-009 / PILOT-AI-011 — Flux IA V4
+   Simulation visuelle du futur flux ChatGPT/Claude -> Roadmap.
+   ========================================================= */
+.demo-ai-btn {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #ddd6fe;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #f5f3ff 0%, #eef6ff 100%);
+  color: #5b21b6;
+  font-size: 12px;
+  font-weight: 750;
+  box-shadow: 0 4px 12px rgba(124,58,237,.08);
+}
+.demo-ai-btn:hover { border-color: #c4b5fd; transform: translateY(-1px); }
+.demo-ai-btn span { font-size: 15px; color: var(--violet); }
+.ai-demo-modal > header small { color: var(--violet); }
+.ai-demo-intro {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  align-items: start;
+  gap: 11px;
+  margin: 18px 0 4px;
+  padding: 13px 14px;
+  border: 1px solid #ddd6fe;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #faf5ff 0%, #eff6ff 100%);
+}
+.ai-demo-intro > span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #7c3aed, #2563eb);
+  color: white;
+  box-shadow: 0 6px 14px rgba(124,58,237,.18);
+}
+.ai-demo-intro p { margin: 1px 0 0; color: #475569; font-size: 12px; line-height: 1.5; }
+.ai-demo-rule {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--violet);
+  border-radius: 7px;
+  background: #faf7ff;
+  color: #5b21b6;
+  font-size: 12px;
+}
+.ai-submit-btn { background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%); border-color: #6d28d9; }
+.meta-wide { grid-column: 1 / -1; }
+
+@media (max-width: 767px) {
+  .demo-ai-btn { width: 40px; padding: 0; justify-content: center; }
+  .demo-ai-btn b { display: none; }
+}
