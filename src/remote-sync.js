@@ -12,7 +12,8 @@
     DOCUMENT_SYNC: 'PILOT-SUPA-008',
     AI_SYNC: 'PILOT-SUPA-009',
     RECOVERY: 'PILOT-SUPA-010',
-    TEAM_DIRECTORY: 'PILOT-TEAM-001'
+    TEAM_DIRECTORY: 'PILOT-TEAM-001',
+    AI_EVENT_LOAD: 'PILOT-SUPA-013'
   });
 
   const STORAGE_KEY = 'speedarti-pilotage-demo-v1';
@@ -188,12 +189,25 @@
     return data || [];
   }
 
+  async function selectRecentAiEvents() {
+    const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await client
+      .from('ai_events')
+      .select('*')
+      .gte('happened_at', since)
+      .order('happened_at', { ascending:false })
+      .limit(500);
+    if (error) throw new Error(`ai_events: ${error.message}`);
+    trace(TAGS.AI_EVENT_LOAD, 'Remontées IA chargées', { count:(data || []).length });
+    return data || [];
+  }
+
   async function loadRemoteState() {
     trace(TAGS.HYDRATE, 'Chargement des données Supabase');
 
     const [
       members, projects, projectMembers, agents, tasks, changes,
-      notifications, activity, documents, aiRequests, reports, reportProjects
+      notifications, activity, documents, aiRequests, aiEvents, reports, reportProjects
     ] = await Promise.all([
       selectAll('team_members'),
       selectAll('projects'),
@@ -205,6 +219,7 @@
       selectAll('activity_log'),
       selectAll('project_documents'),
       selectAll('ai_requests'),
+      selectRecentAiEvents(),
       selectAll('daily_reports'),
       selectAll('daily_report_projects')
     ]);
@@ -387,11 +402,28 @@
       processedAt: row.processed_at
     }));
 
+    const localAiEvents = aiEvents.map(row => ({
+      id: row.event_id || row.id,
+      eventId: row.event_id,
+      sourceAgent: agentClient(row.agent_id),
+      personId: memberClient(row.member_id),
+      projectId: projectClient(row.project_id),
+      taskId: taskClient(row.task_id),
+      eventType: row.event_type,
+      summary: row.summary,
+      payload: row.payload || {},
+      happenedAt: row.happened_at,
+      receivedAt: row.received_at,
+      processedAt: row.processed_at,
+      processingStatus: row.processing_status,
+      internalTag: row.internal_tag
+    }));
+
     const localReports = reports.map(row => ({
       id: keyFor(row, 'report'),
       reportDate: row.report_date,
       personId: memberClient(row.member_id),
-      source: row.source_type === 'ai' ? 'ai' : 'manual',
+      source: row.source_type === 'manual' ? 'manual' : 'ai',
       sourceAgent: agentClient(row.ai_agent_id),
       status: row.status,
       summary: row.summary || row.done_summary || '',
@@ -424,6 +456,7 @@
       documents: localDocuments,
       aiAgents: localAgents,
       aiRequests: localAiRequests,
+      aiEvents: localAiEvents,
       dailyReports: localReports,
       // Google Calendar sera branché dans un lot dédié. On évite les faux rendez-vous de la démo.
       calendarEvents: [],

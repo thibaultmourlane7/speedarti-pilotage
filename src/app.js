@@ -46,6 +46,7 @@ let assistantStatus = { configured:null, model:'gpt-5.6', error:'' };
 
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
+state.aiEvents = Array.isArray(state.aiEvents) ? state.aiEvents : [];
 state.dailyReports = Array.isArray(state.dailyReports) ? state.dailyReports : [];
 // PILOT-UI-040 — toutes les dates opérationnelles utilisent désormais l’horloge réelle de l’appareil.
 
@@ -1083,6 +1084,70 @@ function renderAssistant() {
     </div>`;
 }
 
+
+// PILOT-AI-024..027 / PILOT-UI-044 — remontées structurées des IA externes.
+function aiEventsForDate(reportDate = currentDateKey()) {
+  return (state.aiEvents || [])
+    .filter(event => dateKey(event.happenedAt) === reportDate)
+    .sort((a,b) => new Date(b.happenedAt) - new Date(a.happenedAt));
+}
+
+function aiEventsForAgent(agentId, reportDate = currentDateKey()) {
+  return aiEventsForDate(reportDate).filter(event => event.sourceAgent === agentId);
+}
+
+function aiEventTypeLabel(type) {
+  return ({
+    work_done:'Travail réalisé',
+    task_created:'Tâche créée',
+    task_updated:'Tâche mise à jour',
+    task_completed:'Tâche terminée',
+    project_progress:'Progression projet',
+    blocker:'Blocage',
+    next_step:'Prochaine étape',
+    decision:'Décision',
+    note:'Note'
+  })[type] || type || 'Événement';
+}
+
+function aiConnectorStatus(agent, reportDate = currentDateKey()) {
+  const events = aiEventsForAgent(agent.id, reportDate);
+  const last = agent.lastSeenAt || events[0]?.receivedAt || events[0]?.happenedAt || null;
+  const today = last && dateKey(last) === currentDateKey();
+  if (events.length) return { tone:'ok', label:`${events.length} remontée${events.length > 1 ? 's' : ''} ce jour`, last };
+  if (today) return { tone:'ok', label:'Connecteur actif aujourd’hui', last };
+  if (last) return { tone:'warning', label:`Dernière remontée ${formatDate(last)}`, last };
+  return { tone:'neutral', label:'En attente de connexion', last:null };
+}
+
+function renderAiIngestPanel() {
+  const scopeIds = new Set(visibleReportMembers().map(member => member.id));
+  const agents = activeAiAgents().filter(agent => scopeIds.has(agent.personId));
+  const dayEvents = aiEventsForDate(dailyReportDate);
+  const latest = dayEvents.slice(0, 8);
+
+  return `<section class="section ai-ingest-panel">
+    <div class="section-title">
+      <div><h2>Remontées IA · ${esc(formatDate(dailyReportDate))}</h2><small>Événements envoyés automatiquement par les agents connectés</small></div>
+      <span class="owner-pill">${dayEvents.length} événement${dayEvents.length > 1 ? 's' : ''}</span>
+    </div>
+    <div class="ai-ingest-grid">
+      ${agents.map(agent => {
+        const events = aiEventsForAgent(agent.id, dailyReportDate);
+        const completed = events.filter(event => event.eventType === 'task_completed').length;
+        const blockers = events.filter(event => event.eventType === 'blocker').length;
+        const status = aiConnectorStatus(agent, dailyReportDate);
+        return `<article class="ai-ingest-card">
+          <header><div><strong>${esc(agent.name)} · ${esc(teamName(agent.personId))}</strong><small>${esc(agent.provider || 'IA')}</small></div><span class="ai-source-status ${status.tone}">${esc(status.label)}</span></header>
+          <div class="ai-ingest-stats"><span><b>${events.length}</b><small>Remontées</small></span><span><b>${completed}</b><small>Tâches terminées</small></span><span class="${blockers ? 'stat-warning' : ''}"><b>${blockers}</b><small>Blocages</small></span></div>
+          ${status.last ? `<small class="ai-ingest-last">Dernier signal : ${esc(formatDate(status.last))} ${esc(formatTime(status.last))}</small>` : '<small class="ai-ingest-last">Aucun signal reçu pour le moment.</small>'}
+        </article>`;
+      }).join('') || '<div class="empty-state">Aucun agent IA visible.</div>'}
+    </div>
+    ${latest.length ? `<div class="ai-event-feed">${latest.map(event => `<div class="ai-event-row"><span>${esc(formatTime(event.happenedAt))}</span><div><strong>${esc(aiEventTypeLabel(event.eventType))}</strong><p>${esc(event.summary)}</p><small>${esc(aiAgentLabel(event.sourceAgent))}${event.projectId ? ` · ${esc(project(event.projectId)?.name || 'Projet')}` : ''}</small></div></div>`).join('')}</div>` : '<div class="empty-line">Aucune remontée IA pour cette journée.</div>'}
+  </section>`;
+}
+
 function reportSourceLabel(report) {
   if (report.source === 'manual') return 'Ajout manuel';
   return aiAgentLabel(report.sourceAgent);
@@ -1126,8 +1191,12 @@ function renderDailyReports() {
   const members = dailyReportPersonFilter === 'all' ? scopeMembers : scopeMembers.filter(m => m.id === dailyReportPersonFilter);
   const subtitle = isAdmin() ? 'Synthèse quotidienne de l’équipe et des sources connectées' : 'Ton compte rendu quotidien et les sources qui te concernent';
   return pageHeader('Comptes rendus', subtitle, '<div class="header-actions report-header-actions"><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
-    <section class="report-automation-banner"><div><span>✦</span><div><strong>Automatisation multi-IA prévue</strong><small>Une personne peut utiliser plusieurs IA. Chaque agent envoie uniquement son mini compte rendu autorisé ; Pilotage les regroupe ensuite par personne et par journée, sans que les IA lisent les conversations des autres.</small></div></div></section>
+    <style>
+      .ai-ingest-panel{margin-bottom:16px}.ai-ingest-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:12px 0}.ai-ingest-card{border:1px solid var(--border);border-radius:11px;padding:11px;background:#fff}.ai-ingest-card header{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.ai-ingest-card header strong{display:block;font-size:11px}.ai-ingest-card header small{color:var(--muted);font-size:9px}.ai-source-status{border-radius:999px;padding:4px 7px;font-size:8px;font-weight:900;white-space:nowrap}.ai-source-status.ok{background:#ecfdf5;color:#15803d}.ai-source-status.warning{background:#fff7ed;color:#c2410c}.ai-source-status.neutral{background:#f1f5f9;color:#64748b}.ai-ingest-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}.ai-ingest-stats span{background:#f8fafc;border-radius:8px;padding:7px;text-align:center}.ai-ingest-stats b{display:block;font-size:14px;color:#17345f}.ai-ingest-stats small{font-size:8px;color:var(--muted)}.ai-ingest-last{display:block;margin-top:8px;color:var(--muted);font-size:8px}.ai-event-feed{border-top:1px solid var(--border);margin-top:10px;padding-top:7px}.ai-event-row{display:grid;grid-template-columns:44px 1fr;gap:9px;padding:7px 0;border-bottom:1px solid #eef2f7}.ai-event-row>span{font-size:9px;font-weight:800;color:#2563eb}.ai-event-row strong{font-size:10px}.ai-event-row p{margin:2px 0;font-size:10px;line-height:1.35}.ai-event-row small{font-size:8px;color:var(--muted)}
+    </style>
+    <section class="report-automation-banner"><div><span>✦</span><div><strong>Collecte multi-IA active</strong><small>Chaque agent connecté peut remonter les tâches réalisées, blocages et prochaines étapes. Pilotage journalise les événements et alimente automatiquement les comptes rendus quotidiens.</small></div></div></section>
     <div class="toolbar report-toolbar"><label class="report-date-field"><span>Journée</span><input id="reportDateFilter" type="date" value="${dailyReportDate}" /></label>${isAdmin() ? `<select id="reportPersonFilter"><option value="all">Toute l’équipe</option>${scopeMembers.map(m => `<option value="${m.id}" ${dailyReportPersonFilter === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>` : `<span class="owner-pill">${esc(teamName(state.currentUser.id))}</span>`}</div>
+    ${renderAiIngestPanel()}
     <section class="team-report-summary">
       <div class="team-report-main"><span class="report-progress-ring large">${summary.received}/${summary.expected}</span><div><small>SYNTHÈSE ÉQUIPE</small><h2>${esc(summary.text)}</h2></div></div>
       <div class="team-report-stats"><span><b>${summary.achievements}</b><small>Réalisations</small></span><span class="${summary.blockers ? 'stat-warning' : ''}"><b>${summary.blockers}</b><small>Blocages</small></span><span><b>${summary.nextSteps}</b><small>Suites</small></span><span><b>${summary.sources}</b><small>Sources reçues</small></span><span class="${summary.validated === summary.sources && summary.sources ? 'stat-ok' : ''}"><b>${summary.validated}</b><small>Sources validées</small></span></div>
