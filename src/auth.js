@@ -9,7 +9,8 @@
     AUTH_SIGNOUT: 'PILOT-AUTH-005',
     AUTH_PROFILE: 'PILOT-AUTH-006',
     PUBLIC_CONFIG: 'PILOT-SEC-001',
-    LIVE_UI: 'PILOT-UI-039'
+    LIVE_UI: 'PILOT-UI-039',
+    PWNED_PASSWORD: 'PILOT-AUTH-007'
   });
 
   const authRoot = document.querySelector('#auth-root');
@@ -35,6 +36,42 @@
     return String(value).replace(/[&<>'"]/g, c => ({
       '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'
     }[c]));
+  }
+
+
+  async function sha1Hex(value) {
+    const data = new TextEncoder().encode(value);
+    const digest = await crypto.subtle.digest('SHA-1', data);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+  }
+
+  // PILOT-AUTH-007 — contrôle gratuit HIBP Pwned Passwords par k-anonymity.
+  // Le mot de passe et son hash complet ne quittent jamais le navigateur.
+  async function assertPasswordNotCompromised(password) {
+    trace(TAGS.PWNED_PASSWORD, 'Vérification Pwned Passwords demandée');
+    const hash = await sha1Hex(password);
+    const prefix = hash.slice(0, 5);
+    const suffix = hash.slice(5);
+
+    const response = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
+      method: 'GET',
+      mode: 'cors',
+      cache: 'no-store',
+      headers: { 'Add-Padding': 'true' }
+    });
+
+    if (!response.ok) {
+      throw new Error('La vérification de sécurité du mot de passe est momentanément indisponible. Réessaie dans quelques instants.');
+    }
+
+    const body = await response.text();
+    const match = body.split(/\r?\n/).find(line => line.startsWith(`${suffix}:`));
+    if (!match) return;
+
+    const count = Number(match.split(':')[1] || 0);
+    if (count > 0) {
+      throw new Error('Ce mot de passe apparaît dans une fuite de données connue. Choisis un mot de passe différent et unique.');
+    }
   }
 
   function renderLoading(message = 'Connexion sécurisée…') {
@@ -149,6 +186,15 @@
 
   async function signUp(email, password) {
     trace(TAGS.AUTH_SIGNUP, 'Création accès demandée', { email });
+
+    try {
+      await assertPasswordNotCompromised(password);
+    } catch (securityError) {
+      trace(TAGS.PWNED_PASSWORD, 'Mot de passe refusé ou vérification indisponible', { message: securityError.message });
+      showError(securityError.message);
+      return;
+    }
+
     const { data, error } = await client.auth.signUp({
       email,
       password,

@@ -1,4 +1,4 @@
-import { loadState, saveState, resetState } from './state.js';
+import { loadState, saveState } from './state.js';
 import { TAGS, trace } from './tags.js';
 
 let state = loadState();
@@ -32,14 +32,14 @@ let deferTaskId = null;
 let teamWorkloadOpen = false;
 let dailyReportModalOpen = false;
 let dailyReportEditId = null;
-let dailyReportDate = '2026-09-17';
+let dailyReportDate = currentDateKey();
 let dailyReportPersonFilter = 'all';
 let dailyReportPresetPersonId = null;
 
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
 state.dailyReports = Array.isArray(state.dailyReports) ? state.dailyReports : [];
-const DEMO_NOW = new Date('2026-09-17T13:45:00+02:00');
+// PILOT-UI-040 — toutes les dates opérationnelles utilisent désormais l’horloge réelle de l’appareil.
 
 const app = document.querySelector('#app');
 
@@ -126,9 +126,74 @@ function task(id) { return state.tasks.find(x => x.id === id); }
 
 function formatTime(iso) { return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function formatDate(iso) { return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }); }
-function dateKey(value) { return value ? String(value).slice(0, 10) : ''; }
-function toDueIso(value) { return value ? `${value}T18:00:00+02:00` : null; }
+function localDateKey(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function currentDateKey() { return localDateKey(new Date()); }
+function dateKey(value) {
+  if (!value) return '';
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  return localDateKey(new Date(value));
+}
+function dateFromKey(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return new Date(value);
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
+}
+function dateAtHourIso(value, hour = 9) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), hour, 0, 0, 0).toISOString();
+}
+function addDaysKey(days, base = new Date()) {
+  const d = base instanceof Date ? new Date(base) : dateFromKey(base);
+  d.setDate(d.getDate() + days);
+  return localDateKey(d);
+}
+function nextWeekMondayKey(base = new Date()) {
+  const d = base instanceof Date ? new Date(base) : dateFromKey(base);
+  const day = d.getDay();
+  const daysUntilNextMonday = ((8 - day) % 7) || 7;
+  d.setDate(d.getDate() + daysUntilNextMonday);
+  return localDateKey(d);
+}
+function startOfWeek(base = new Date()) {
+  const d = new Date(base);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay() || 7;
+  d.setDate(d.getDate() - day + 1);
+  return d;
+}
+function endOfWeek(base = new Date()) {
+  const d = startOfWeek(base);
+  d.setDate(d.getDate() + 6);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+function capitalizeFirst(value = '') { return value ? value.charAt(0).toUpperCase() + value.slice(1) : value; }
+function longDateLabel(value = currentDateKey()) {
+  return capitalizeFirst(dateFromKey(value).toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }));
+}
+function weekLabel(base = new Date()) {
+  const start = startOfWeek(base);
+  const end = endOfWeek(base);
+  const startLabel = start.toLocaleDateString('fr-FR', { day:'numeric', month: start.getMonth() === end.getMonth() ? undefined : 'long' });
+  const endLabel = end.toLocaleDateString('fr-FR', { day:'numeric', month:'long' });
+  return `Semaine du ${startLabel} au ${endLabel}`;
+}
+function monthLabel(base = new Date()) {
+  return capitalizeFirst(base.toLocaleDateString('fr-FR', { month:'long', year:'numeric' }));
+}
+function toDueIso(value) { return value ? dateAtHourIso(value, 18) : null; }
 function personInitials(name = '') { return name.split(/\s|-/).filter(Boolean).slice(0,2).map(x => x[0]).join('').toUpperCase(); }
+function isAdmin() { return state.currentUser?.role === 'admin'; }
+function canManageProject(p) { return Boolean(p) && (isAdmin() || p.owner === state.currentUser.id); }
+function canEditReport(report) { return Boolean(report) && (isAdmin() || report.personId === state.currentUser.id); }
 function teamPicker(targetId, selectedId) {
   const selected = selectedId || state.currentUser.id;
   return `<div class="team-picker" data-picker="${targetId}"><input type="hidden" id="${targetId}" value="${selected}" />${state.team.map(m => `<button type="button" class="team-choice ${m.id === selected ? 'active' : ''}" data-team-target="${targetId}" data-team-value="${m.id}"><span>${personInitials(m.name)}</span><b>${esc(m.name)}</b><small>${esc(m.role)}</small></button>`).join('')}</div>`;
@@ -190,7 +255,7 @@ function refreshSmartNotifications() {
   state.notifications.filter(n => !n.resolved && (n.type === 'deadline' || n.type === 'blocker')).forEach(n => {
     if (n.type === 'deadline') {
       const t = task(n.taskId);
-      const stillActive = t && t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW;
+      const stillActive = t && t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < new Date();
       if (!stillActive) { n.resolved = true; n.resolvedAt = new Date().toISOString(); changed = true; trace(TAGS.NOTIF_RESOLVE, 'Alerte échéance résolue automatiquement', { notificationId:n.id, taskId:n.taskId }); }
     }
     if (n.type === 'blocker') {
@@ -199,7 +264,7 @@ function refreshSmartNotifications() {
       if (!stillActive) { n.resolved = true; n.resolvedAt = new Date().toISOString(); changed = true; trace(TAGS.NOTIF_RESOLVE, 'Alerte blocage résolue automatiquement', { notificationId:n.id, projectId:n.projectId }); }
     }
   });
-  state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW && (!t.projectId || !project(t.projectId)?.archived)).forEach(t => {
+  state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < new Date() && (!t.projectId || !project(t.projectId)?.archived)).forEach(t => {
     const key = `deadline:${t.id}`;
     const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
     upsertNotification({ severity:'warning', type:'deadline', title:'Échéance dépassée', message:`${t.title} · échéance ${formatDate(t.dueAt)}`, actionType:'edit_task', taskId:t.id, projectId:t.projectId, groupKey:key, internalTag:TAGS.NOTIF_DEADLINE });
@@ -214,7 +279,8 @@ function refreshSmartNotifications() {
   if (changed) saveState(state);
 }
 
-function queueProjectCompletion(projectId, { sourceType='manual', requestedBy='Thibault', note='' } = {}) {
+function queueProjectCompletion(projectId, { sourceType='manual', requestedBy=null, note='' } = {}) {
+  requestedBy = requestedBy || state.currentUser?.name || teamName(state.currentUser?.id) || 'Utilisateur';
   ensureRuntimeState();
   const p = project(projectId);
   if (!p || p.status === 'completed') return null;
@@ -241,7 +307,8 @@ function persist(tag, message, details = {}) {
   trace(tag, message, details);
 }
 
-function addActivity({ actor = 'Thibault', projectId = null, text, internalTag }) {
+function addActivity({ actor = null, projectId = null, text, internalTag }) {
+  actor = actor || state.currentUser?.name || teamName(state.currentUser?.id) || 'Utilisateur';
   state.activity.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), actor, projectId, text, internalTag });
   persist(TAGS.ACTIVITY_LOG, 'Activité ajoutée', { projectId, internalTag });
 }
@@ -259,17 +326,17 @@ function layout(content) {
         <nav class="side-nav">
           ${navItems.map(([id, label, icon]) => `<button class="nav-item ${currentPage === id ? 'active' : ''}" data-page="${id}"><span>${icon}</span>${label}</button>`).join('')}
         </nav>
-        <div class="sidebar-foot"><button class="text-button" id="resetDemo">Réinitialiser la démo</button></div>
+        <div class="sidebar-foot"></div>
       </aside>
 
       <div class="workspace">
         <header class="topbar">
           <div class="mobile-brand">SpeedArti <span>Pilotage</span></div>
           <div class="top-actions">
-            <button class="quick-create-btn" id="quickCreateBtn" title="Actions rapides"><span>＋</span><b>Créer</b></button><button class="demo-ai-btn" id="simulateAiBtn" title="Simuler une mise à jour ChatGPT ou Claude"><span>✦</span><b>IA démo</b></button>
+            <button class="quick-create-btn" id="quickCreateBtn" title="Actions rapides"><span>＋</span><b>Créer</b></button>
             <button class="icon-btn search-btn" id="searchBtn" aria-label="Rechercher">⌕</button>
             <button class="icon-btn notif-btn" id="notificationBtn" aria-label="Notifications">♢${unread ? `<b>${unread}</b>` : ''}</button>
-            <span class="avatar" title="Thibault" aria-label="Utilisateur Thibault">${esc(state.currentUser.initials)}</span>
+            <span class="avatar" title="${esc(state.currentUser.name || 'Utilisateur')}" aria-label="Utilisateur ${esc(state.currentUser.name || 'Utilisateur')}">${esc(state.currentUser.initials)}</span>
           </div>
         </header>
         <main class="content">${content}</main>
@@ -283,7 +350,6 @@ function layout(content) {
       ${planningTaskId ? renderPlanningModal(planningTaskId) : ''}
       ${taskModalOpen ? renderTaskModal() : ''}
       ${projectModalOpen ? renderProjectModal() : ''}
-      ${aiSimulationOpen ? renderAiSimulationModal() : ''}
       ${documentModalOpen ? renderDocumentModal() : ''}
       ${approvalRequestId ? renderApprovalModal(approvalRequestId) : ''}
       ${quickActionOpen ? renderQuickActionModal() : ''}
@@ -451,18 +517,19 @@ function teamDailySummary(reportDate) {
   };
 }
 
+// PILOT-SEC-002 — l’interface de production n’expose plus les outils de simulation/réinitialisation de démo.
 function renderToday() {
-  const today = '2026-09-17'; // date fixe de la démo pour rester cohérente avec les données mockées
+  const today = currentDateKey();
   const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.id && t.scheduledFor === today && t.status !== 'completed' && (!t.projectId || !project(t.projectId)?.archived));
   const blocked = state.projects.filter(p => !p.archived && (p.status === 'blocked' || p.blocker)).slice(0, 3);
   const toPlan = state.tasks.filter(t => t.needsPlanning && t.planningStatus === 'unplanned').length;
   const approvals = state.notifications.filter(n => !n.resolved && n.type === 'approval_required').length;
   const events = state.calendarEvents.filter(e => e.at.startsWith(today));
 
-  const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < DEMO_NOW && (!t.projectId || !project(t.projectId)?.archived)).length;
+  const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < new Date() && (!t.projectId || !project(t.projectId)?.archived)).length;
   const activeBlockers = state.projects.filter(p => !p.archived && p.blocker && p.status !== 'completed').length;
   const reportSummary = teamDailySummary(today);
-  return pageHeader('Bonjour Thibault', 'Jeudi 17 septembre') + `
+  return pageHeader(`Bonjour ${state.currentUser.name || teamName(state.currentUser.id)}`, longDateLabel(today)) + `
     <section class="pilot-pulse">
       <button class="pulse-card pulse-red" data-notif-open-filter="warning"><span>Retards</span><strong>${overdue}</strong><small>échéance${overdue > 1 ? 's' : ''} dépassée${overdue > 1 ? 's' : ''}</small></button>
       <button class="pulse-card pulse-orange" data-notif-open-filter="warning"><span>Blocages</span><strong>${activeBlockers}</strong><small>projet${activeBlockers > 1 ? 's' : ''} à surveiller</small></button>
@@ -599,7 +666,7 @@ function renderProjectDetail(id) {
   const activities = state.activity.filter(a => a.projectId === id).slice(0,5);
   return `
     <button class="back-btn" id="backProjects">← Projets</button>
-    ${pageHeader(p.name, teamName(p.owner), `<div class="header-actions">${p.archived ? `<button class="secondary-btn" data-restore-project="${p.id}">Restaurer</button>` : `<button class="secondary-btn" data-edit-project="${p.id}">Modifier</button><button class="archive-btn" data-archive-project="${p.id}">Archiver</button>`}</div>`)}
+    ${pageHeader(p.name, teamName(p.owner), `<div class="header-actions">${canManageProject(p) ? (p.archived ? `<button class="secondary-btn" data-restore-project="${p.id}">Restaurer</button>` : `<button class="secondary-btn" data-edit-project="${p.id}">Modifier</button><button class="archive-btn" data-archive-project="${p.id}">Archiver</button>`) : ''}</div>`)}
     ${p.archived ? `<div class="archive-banner"><strong>Projet archivé</strong><span>Il reste consultable, mais n’apparaît plus dans le pilotage actif.</span></div>` : ''}
     <div class="project-detail-head"><div>${statusBadge(p.status)} ${priorityBadge(p.priority)} <span class="owner-pill">${esc(teamName(p.owner))}</span></div><strong>${p.progress} %</strong></div>
     <div class="progress large"><i style="width:${p.progress}%"></i></div>
@@ -614,23 +681,24 @@ function renderProjectDetail(id) {
 }
 
 function renderCalendar() {
-  const ref = new Date('2026-09-17T12:00:00+02:00');
-  const startWeek = new Date('2026-09-14T00:00:00+02:00');
-  const endWeek = new Date('2026-09-20T23:59:59+02:00');
+  const ref = new Date();
+  const today = currentDateKey();
+  const startWeek = startOfWeek(ref);
+  const endWeek = endOfWeek(ref);
   const events = [
     ...state.calendarEvents.map(e => ({...e, source:'google', label:'Google Calendar'})),
-    ...state.tasks.filter(t => t.scheduledFor).map(t => ({ id:`scheduled-${t.id}`, taskId:t.id, at:`${t.scheduledFor}T09:00:00+02:00`, title:t.title, source:'SpeedArti', label:'Tâche planifiée' })),
+    ...state.tasks.filter(t => t.scheduledFor).map(t => ({ id:`scheduled-${t.id}`, taskId:t.id, at:dateAtHourIso(t.scheduledFor, 9), title:t.title, source:'SpeedArti', label:'Tâche planifiée' })),
     ...state.tasks.filter(t => t.dueAt).map(t => ({ id:`due-${t.id}`, taskId:t.id, at:t.dueAt, title:t.title, source:'SpeedArti', label:'Échéance' }))
-  ].sort((a,b) => new Date(a.at)-new Date(b.at));
+  ].filter(e => e.at).sort((a,b) => new Date(a.at)-new Date(b.at));
 
   const visible = events.filter(e => {
     const d = new Date(e.at);
-    if (calendarView === 'today') return dateKey(e.at) === '2026-09-17';
+    if (calendarView === 'today') return dateKey(e.at) === today;
     if (calendarView === 'week') return d >= startWeek && d <= endWeek;
     return d.getFullYear() === ref.getFullYear() && d.getMonth() === ref.getMonth();
   });
 
-  const title = calendarView === 'today' ? 'Jeudi 17 septembre' : calendarView === 'week' ? 'Semaine du 14 au 20 septembre' : 'Septembre 2026';
+  const title = calendarView === 'today' ? longDateLabel(today) : calendarView === 'week' ? weekLabel(ref) : monthLabel(ref);
   return pageHeader('Agenda', 'Rendez-vous, tâches prévues et échéances au même endroit') + `
     <div class="tabs">
       <button class="${calendarView === 'today' ? 'active' : ''}" data-calendar-view="today">Aujourd’hui</button>
@@ -728,7 +796,7 @@ function renderDailyReportCard(member, reports) {
       <section><h3>Suite</h3>${renderReportList(consolidated.nextSteps, 'Aucune prochaine étape renseignée.')}</section>
     </div>
     <div class="report-source-list">
-      ${reports.map(report => `<div class="report-source-row"><div class="report-source-meta"><span class="source-badge ${report.source === 'manual' ? 'manual' : 'ai'}">${esc(reportSourceLabel(report))}</span><p>${esc(report.summary || 'Sans résumé')}</p></div><div class="report-source-actions"><span class="report-status ${report.validatedAt ? 'validated' : 'draft'}">${report.validatedAt ? 'Validé' : 'À relire'}</span><button class="secondary-btn" data-edit-report="${report.id}">Modifier</button>${report.validatedAt ? '' : `<button class="primary-btn" data-validate-report="${report.id}">Valider</button>`}</div></div>`).join('')}
+      ${reports.map(report => `<div class="report-source-row"><div class="report-source-meta"><span class="source-badge ${report.source === 'manual' ? 'manual' : 'ai'}">${esc(reportSourceLabel(report))}</span><p>${esc(report.summary || 'Sans résumé')}</p></div><div class="report-source-actions"><span class="report-status ${report.validatedAt ? 'validated' : 'draft'}">${report.validatedAt ? 'Validé' : 'À relire'}</span>${canEditReport(report) && !report.validatedAt ? `<button class="secondary-btn" data-edit-report="${report.id}">Modifier</button>` : ''}${report.validatedAt || !isAdmin() ? '' : `<button class="primary-btn" data-validate-report="${report.id}">Valider</button>`}</div></div>`).join('')}
     </div>
     ${projectNames.length ? `<div class="report-projects">${projectNames.map(name => `<span>${esc(name)}</span>`).join('')}</div>` : ''}
     <footer><small>${reports.length} compte${reports.length > 1 ? 's' : ''} rendu${reports.length > 1 ? 's' : ''} consolidé${reports.length > 1 ? 's' : ''}</small><div><button class="secondary-btn" data-report-new-person="${member.id}">+ Complément manuel</button></div></footer>
@@ -738,7 +806,7 @@ function renderDailyReportCard(member, reports) {
 function renderDailyReports() {
   const summary = teamDailySummary(dailyReportDate);
   const members = dailyReportPersonFilter === 'all' ? state.team : state.team.filter(m => m.id === dailyReportPersonFilter);
-  return pageHeader('Comptes rendus', 'Plusieurs IA peuvent contribuer pour une même personne ; Pilotage consolide ensuite la journée', '<div class="header-actions report-header-actions"><button class="secondary-btn" id="collectDailyReports">✦ Simuler collecte multi-IA</button><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
+  return pageHeader('Comptes rendus', 'Synthèse quotidienne de l’équipe et des sources connectées', '<div class="header-actions report-header-actions"><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
     <section class="report-automation-banner"><div><span>✦</span><div><strong>Automatisation multi-IA prévue</strong><small>Une personne peut utiliser plusieurs IA. Chaque agent envoie uniquement son mini compte rendu autorisé ; Pilotage les regroupe ensuite par personne et par journée, sans que les IA lisent les conversations des autres.</small></div></div></section>
     <div class="toolbar report-toolbar"><label class="report-date-field"><span>Journée</span><input id="reportDateFilter" type="date" value="${dailyReportDate}" /></label><select id="reportPersonFilter"><option value="all">Toute l’équipe</option>${state.team.map(m => `<option value="${m.id}" ${dailyReportPersonFilter === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
     <section class="team-report-summary">
@@ -842,19 +910,20 @@ function saveDailyReportFromForm() {
 }
 
 function validateDailyReport(reportId) {
+  if (!isAdmin()) return;
   const report = state.dailyReports.find(r => r.id === reportId);
   if (!report || report.validatedAt) return;
   report.validatedAt = new Date().toISOString();
   report.validatedBy = state.currentUser.id;
   report.status = 'validated';
   report.updatedAt = new Date().toISOString();
-  addActivity({ actor:'Thibault', projectId:report.projectIds?.[0] || null, text:`Compte rendu de ${teamName(report.personId)} du ${formatDate(report.reportDate)} validé`, internalTag:TAGS.REPORT_VALIDATE });
+  addActivity({ actor:state.currentUser.name || teamName(state.currentUser.id), projectId:report.projectIds?.[0] || null, text:`Compte rendu de ${teamName(report.personId)} du ${formatDate(report.reportDate)} validé`, internalTag:TAGS.REPORT_VALIDATE });
   persist(TAGS.REPORT_VALIDATE, 'Compte rendu validé', { reportId, personId:report.personId, reportDate:report.reportDate });
   render();
 }
 
 function renderMore() {
-  return pageHeader('Plus', 'Outils complémentaires de la démo') + `<div class="menu-list"><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button><button id="exportDemo">Sauvegarder la démo <span>↓</span></button><button id="importDemo">Restaurer une sauvegarde <span>↑</span></button></div>`;
+  return pageHeader('Plus', 'Outils complémentaires') + `<div class="menu-list"><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
 }
 
 function renderQuickActionModal() {
@@ -887,7 +956,7 @@ function renderNotifications() {
     if (n.actionType === 'approval') return `<button class="text-button" data-approval="${n.changeRequestId}" data-notif-read="${n.id}">Examiner →</button>`;
     if (n.actionType === 'edit_task') return `<button class="text-button" data-edit-task="${n.taskId}" data-notif-read="${n.id}">Ouvrir la tâche →</button>`;
     if (n.actionType === 'open_project') return `<button class="text-button" data-open-project="${n.projectId}" data-notif-read="${n.id}">Ouvrir le projet →</button>`;
-    if (n.actionType === 'retry') return `<button class="text-button" data-retry-notif="${n.id}">Réessayer (démo) →</button>`;
+    if (n.actionType === 'retry') return `<button class="text-button" data-retry-notif="${n.id}">Clore l’erreur →</button>`;
     return `<button class="text-button" data-notif-read="${n.id}">Marquer lu</button>`;
   };
   return `<div class="drawer-backdrop" id="drawerBackdrop"></div><aside class="notification-drawer">
@@ -932,7 +1001,7 @@ function renderTaskModal() {
   const priority = existing?.priority || 'medium';
   const status = existing?.status || 'todo';
   const bucket = existing?.planningBucket || 'this_week';
-  const scheduled = existing?.scheduledFor || (!existing && currentPage === 'today' ? '2026-09-17' : '');
+  const scheduled = existing?.scheduledFor || (!existing && currentPage === 'today' ? currentDateKey() : '');
   const due = dateKey(existing?.dueAt);
   return `<div class="modal-backdrop" id="taskModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
     <header><div><small>${existing ? 'MODIFIER LA TÂCHE' : 'NOUVELLE TÂCHE'}</small><h2>${existing ? esc(existing.title) : 'Ajouter une tâche'}</h2></div><button class="icon-btn" id="closeTaskModal">×</button></header>
@@ -960,7 +1029,7 @@ function renderProjectModal() {
     <header><div><small>${existing ? 'MODIFIER LE PROJET' : 'NOUVEAU PROJET'}</small><h2>${existing ? esc(existing.name) : 'Créer un projet'}</h2></div><button class="icon-btn" id="closeProjectModal">×</button></header>
     <div class="form-grid">
       <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" value="${esc(existing?.name || '')}" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
-      <div class="form-field form-field-full"><span>Responsable — clique sur une personne</span>${teamPicker('projectOwner', owner)}</div>
+      <div class="form-field form-field-full"><span>Responsable</span>${isAdmin() ? teamPicker('projectOwner', owner) : `<input type="hidden" id="projectOwner" value="${state.currentUser.id}" /><div class="owner-pill">${esc(teamName(state.currentUser.id))}</div>`}</div>
       <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field"><span>État</span><select id="projectStatus">${Object.entries(statusLabels).filter(([value]) => existing || value !== 'completed').map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field form-field-full range-field"><span>Progression <output id="projectProgressValue">${progress} %</output></span><input id="projectProgress" type="range" min="0" max="100" step="5" value="${progress}" /></label>
@@ -1006,7 +1075,7 @@ function renderApprovalModal(requestId) {
     <div class="approval-summary"><div><small>Demandé par</small><strong>${esc(request.requestedBy)}</strong></div><div><small>Action proposée</small><strong>Terminé · 100 %</strong></div></div>
     ${request.note ? `<p class="approval-note">${esc(request.note)}</p>` : ''}
     <p class="form-note">La progression peut évoluer automatiquement, mais le passage officiel du projet en <strong>Terminé</strong> demande une décision humaine.</p>
-    <footer><button class="danger-ghost-btn" id="rejectApproval" data-request="${request.id}">Refuser</button><button class="primary-btn" id="approveApproval" data-request="${request.id}">Valider le passage en Terminé</button></footer>
+    <footer>${isAdmin() ? `<button class="danger-ghost-btn" id="rejectApproval" data-request="${request.id}">Refuser</button><button class="primary-btn" id="approveApproval" data-request="${request.id}">Valider le passage en Terminé</button>` : `<span class="form-note">Décision réservée à la Direction.</span>`}</footer>
   </div>`;
 }
 
@@ -1017,7 +1086,7 @@ function renderDocumentModal() {
       <label class="form-field form-field-full"><span>Nom</span><input id="documentName" type="text" placeholder="Ex. Cahier fonctionnel V2" maxlength="140" /></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="documentProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
       <label class="form-field"><span>Type</span><select id="documentType"><option>Document</option><option>Tableur</option><option>PDF</option><option>Plan</option></select></label>
-      <label class="form-field form-field-full"><span>Lien Google Drive (optionnel dans la démo)</span><input id="documentUrl" type="url" placeholder="https://drive.google.com/..." /></label>
+      <label class="form-field form-field-full"><span>Lien Google Drive (optionnel)</span><input id="documentUrl" type="url" placeholder="https://drive.google.com/..." /></label>
     </div>
     <p class="form-note">Pilotage stocke uniquement la référence et le lien. Le fichier reste dans Google Drive.</p>
     <footer><button class="secondary-btn" id="cancelDocumentModal">Annuler</button><button class="primary-btn" id="saveDocument">Lier le document</button></footer>
@@ -1055,8 +1124,8 @@ function renderDeferModal(taskId) {
 function renderTeamWorkloadModal() {
   const cards = state.team.map(m => {
     const tasks = state.tasks.filter(t => t.assignedTo === m.id && t.status !== 'completed' && (!t.projectId || !project(t.projectId)?.archived));
-    const today = tasks.filter(t => t.scheduledFor === '2026-09-17').length;
-    const overdue = tasks.filter(t => t.dueAt && new Date(t.dueAt) < DEMO_NOW).length;
+    const today = tasks.filter(t => t.scheduledFor === currentDateKey()).length;
+    const overdue = tasks.filter(t => t.dueAt && new Date(t.dueAt) < new Date()).length;
     const active = tasks.filter(t => t.status === 'in_progress').length;
     const blockers = state.projects.filter(p => !p.archived && p.owner === m.id && p.blocker).length;
     return `<button class="workload-card" data-team-planning="${m.id}"><div class="workload-person"><span>${personInitials(m.name)}</span><div><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small></div></div><div class="workload-stats"><span><b>${today}</b><small>Aujourd’hui</small></span><span class="${overdue ? 'stat-alert' : ''}"><b>${overdue}</b><small>Retard</small></span><span><b>${active}</b><small>En cours</small></span><span class="${blockers ? 'stat-warning' : ''}"><b>${blockers}</b><small>Blocage</small></span></div><em>Voir sa Roadmap →</em></button>`;
@@ -1141,8 +1210,8 @@ function retryNotification(id) {
   n.resolved = true;
   n.readAt = n.readAt || new Date().toISOString();
   n.resolvedAt = new Date().toISOString();
-  addActivity({ actor:'Pilotage', projectId:n.projectId || null, text:`Nouvel essai lancé (démo) : ${n.title}`, internalTag:TAGS.NOTIF_RETRY });
-  persist(TAGS.NOTIF_RETRY, 'Nouvel essai de notification technique simulé', { id, type:n.type, groupKey:n.groupKey || null });
+  addActivity({ actor:'Pilotage', projectId:n.projectId || null, text:`Erreur technique clôturée manuellement : ${n.title}`, internalTag:TAGS.NOTIF_RETRY });
+  persist(TAGS.NOTIF_RETRY, 'Erreur technique clôturée manuellement', { id, type:n.type, groupKey:n.groupKey || null });
   render();
 }
 
@@ -1172,6 +1241,7 @@ function closeApproval() {
 }
 
 function decideApproval(requestId, approved) {
+  if (!isAdmin()) return;
   const request = state.changeRequests.find(r => r.id === requestId && r.status === 'pending');
   if (!request) return;
   const p = project(request.projectId);
@@ -1318,7 +1388,7 @@ function createProjectFromForm() {
     Object.assign(existing, { name, owner, priority, status:savedStatus, progress:savedProgress, blocker, nextAction, updatedAt:new Date().toISOString() });
     existing.members = [...new Set([...(existing.members || []), state.currentUser.id, owner])];
     addActivity({ projectId: existing.id, text: `Projet mis à jour · ${savedProgress} % · ${statusLabels[savedStatus]}`, internalTag: TAGS.PROJECT_EDIT });
-    if (requestedCompletion) { const request = queueProjectCompletion(existing.id, { sourceType:'manual', requestedBy:'Thibault', note:'Demande effectuée depuis la fiche projet' }); if (request) approvalRequestId = request.id; }
+    if (requestedCompletion) { const request = queueProjectCompletion(existing.id, { sourceType:'manual', requestedBy:state.currentUser.name || teamName(state.currentUser.id), note:'Demande effectuée depuis la fiche projet' }); if (request) approvalRequestId = request.id; }
     if (oldOwner !== owner) addActivity({ projectId: existing.id, text: `Responsable projet : ${teamName(owner)}`, internalTag: TAGS.PROJECT_OWNER });
     if (oldProgress !== progress) addActivity({ projectId: existing.id, text: `Progression : ${oldProgress} % → ${progress} %`, internalTag: TAGS.PROJECT_PROGRESS });
     persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, priority, status:existing.status, progress:existing.progress, blocker });
@@ -1565,7 +1635,7 @@ function archiveProject(projectId) {
   if (!p) return;
   p.archived = true;
   p.archivedAt = new Date().toISOString();
-  state.changeRequests.filter(r => r.projectId === projectId && r.status === 'pending').forEach(r => { r.status='cancelled'; r.decidedAt=new Date().toISOString(); r.decisionBy='Thibault'; });
+  state.changeRequests.filter(r => r.projectId === projectId && r.status === 'pending').forEach(r => { r.status='cancelled'; r.decidedAt=new Date().toISOString(); r.decisionBy=state.currentUser.id; });
   state.notifications.filter(n => !n.resolved && n.projectId === projectId).forEach(n => { n.resolved=true; n.resolvedAt=new Date().toISOString(); });
   addActivity({ projectId, text:`Projet archivé : ${p.name}`, internalTag:TAGS.PROJECT_ARCHIVE });
   persist(TAGS.PROJECT_ARCHIVE, 'Projet archivé', { projectId });
@@ -1602,8 +1672,8 @@ function deferTask(choice) {
   if (!t) return;
   const previousDate = t.scheduledFor;
   const previousBucket = t.planningBucket;
-  if (choice === 'tomorrow') { t.scheduledFor='2026-09-18'; t.planningBucket='this_week'; }
-  if (choice === 'next_week') { t.scheduledFor='2026-09-21'; t.planningBucket='this_week'; }
+  if (choice === 'tomorrow') { t.scheduledFor=addDaysKey(1); t.planningBucket='this_week'; }
+  if (choice === 'next_week') { t.scheduledFor=nextWeekMondayKey(); t.planningBucket='this_week'; }
   if (choice === 'this_month') { t.scheduledFor=null; t.planningBucket='this_month'; }
   if (choice === 'backlog') { t.scheduledFor=null; t.planningBucket='backlog'; }
   t.planningStatus='planned'; t.needsPlanning=false; t.sortOrder=Date.now();
@@ -1621,8 +1691,7 @@ function bindEvents() {
   document.querySelector('#quickActionBackdrop')?.addEventListener('click', closeQuickAction);
   document.querySelectorAll('[data-quick-action]').forEach(el => el.addEventListener('click', () => runQuickAction(el.dataset.quickAction)));
   document.querySelectorAll('[data-action="new-report"]').forEach(el => el.addEventListener('click', () => openDailyReportModal()));
-  document.querySelector('#collectDailyReports')?.addEventListener('click', () => collectAutomaticDailyReports(dailyReportDate));
-  document.querySelector('#reportDateFilter')?.addEventListener('change', e => { dailyReportDate = e.target.value || '2026-09-17'; trace(TAGS.REPORT_FILTER, 'Changement journée comptes rendus', { reportDate:dailyReportDate }); render(); });
+  document.querySelector('#reportDateFilter')?.addEventListener('change', e => { dailyReportDate = e.target.value || currentDateKey(); trace(TAGS.REPORT_FILTER, 'Changement journée comptes rendus', { reportDate:dailyReportDate }); render(); });
   document.querySelector('#reportPersonFilter')?.addEventListener('change', e => { dailyReportPersonFilter = e.target.value || 'all'; trace(TAGS.REPORT_FILTER, 'Filtre personne comptes rendus', { personId:dailyReportPersonFilter }); render(); });
   document.querySelectorAll('[data-edit-report]').forEach(el => el.addEventListener('click', () => openDailyReportModal(el.dataset.editReport)));
   document.querySelectorAll('[data-validate-report]').forEach(el => el.addEventListener('click', () => validateDailyReport(el.dataset.validateReport)));
@@ -1631,14 +1700,6 @@ function bindEvents() {
   document.querySelector('#cancelDailyReport')?.addEventListener('click', closeDailyReportModal);
   document.querySelector('#dailyReportBackdrop')?.addEventListener('click', closeDailyReportModal);
   document.querySelector('#saveDailyReport')?.addEventListener('click', saveDailyReportFromForm);
-  document.querySelector('#simulateAiBtn')?.addEventListener('click', openAiSimulation);
-  document.querySelector('#closeAiSimulation')?.addEventListener('click', closeAiSimulation);
-  document.querySelector('#cancelAiSimulation')?.addEventListener('click', closeAiSimulation);
-  document.querySelector('#aiSimulationBackdrop')?.addEventListener('click', closeAiSimulation);
-  document.querySelector('#runAiSimulation')?.addEventListener('click', simulateAiIncoming);
-  document.querySelector('#aiMode')?.addEventListener('change', syncAiSimulationFields);
-  if (aiSimulationOpen) requestAnimationFrame(syncAiSimulationFields);
-  document.querySelector('#aiTaskTitle')?.addEventListener('keydown', e => { if (e.key === 'Enter') simulateAiIncoming(); });
 
   document.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.page)));
   document.querySelectorAll('[data-mobile-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.mobilePage)));
@@ -1733,8 +1794,6 @@ function bindEvents() {
   document.querySelector('#cancelDocumentModal')?.addEventListener('click', closeDocumentModal);
   document.querySelector('#documentModalBackdrop')?.addEventListener('click', closeDocumentModal);
   document.querySelector('#saveDocument')?.addEventListener('click', createDocumentFromForm);
-  document.querySelector('#exportDemo')?.addEventListener('click', exportDemoBackup);
-  document.querySelector('#importDemo')?.addEventListener('click', importDemoBackup);
 
   document.querySelector('#closeApproval')?.addEventListener('click', closeApproval);
   document.querySelector('#approvalBackdrop')?.addEventListener('click', closeApproval);
@@ -1759,44 +1818,6 @@ function bindEvents() {
   document.querySelector('#cancelTeamWorkload')?.addEventListener('click', closeTeamWorkload);
   document.querySelector('#teamWorkloadBackdrop')?.addEventListener('click', closeTeamWorkload);
 
-  document.querySelector('#resetDemo')?.addEventListener('click', () => {
-    if (!window.confirm('Réinitialiser toute la démo locale ?')) return;
-    state = resetState();
-    currentPage = 'today';
-    selectedProjectId = null;
-    notificationOpen = false;
-    planningTaskId = null;
-    taskModalOpen = false;
-    taskModalProjectId = null;
-    projectModalOpen = false;
-    projectFilter = 'all';
-    planningFilterProject = 'all';
-    planningFilterOwner = 'all';
-    planningFilterPriority = 'all';
-    activityFilter = 'all';
-    notificationFilter = 'all';
-    aiSimulationOpen = false;
-    taskEditId = null;
-    projectEditId = null;
-    calendarView = 'today';
-    documentSearch = '';
-    documentProjectFilter = 'all';
-    documentModalOpen = false;
-    approvalRequestId = null;
-    quickActionOpen = false;
-    activityProjectFilter = 'all';
-    activitySearch = '';
-    archiveModalProjectId = null;
-    deferTaskId = null;
-    teamWorkloadOpen = false;
-    dailyReportModalOpen = false;
-    dailyReportEditId = null;
-    dailyReportDate = '2026-09-17';
-    dailyReportPersonFilter = 'all';
-    dailyReportPresetPersonId = null;
-    mobilePlanningBucket = 'this_month';
-    render();
-  });
 
   document.querySelector('#searchBtn')?.addEventListener('click', () => {
     document.body.insertAdjacentHTML('beforeend', renderSearchOverlay());

@@ -1,6 +1,6 @@
 import { initialState } from './data.js';
 
-// PILOT-DEMO-002 — Persistance locale de démo. Remplacée plus tard par Supabase.
+// PILOT-DEMO-002 — Cache local de reprise. Supabase est la source de vérité depuis V12.
 const STORAGE_KEY = 'speedarti-pilotage-demo-v1';
 
 function clone(value) {
