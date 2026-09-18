@@ -192,11 +192,81 @@ function monthLabel(base = new Date()) {
 function toDueIso(value) { return value ? dateAtHourIso(value, 18) : null; }
 function personInitials(name = '') { return name.split(/\s|-/).filter(Boolean).slice(0,2).map(x => x[0]).join('').toUpperCase(); }
 function isAdmin() { return state.currentUser?.role === 'admin'; }
+function adminMemberId() {
+  return state.team.find(m => m.accessRole === 'admin')?.id
+    || state.team.find(m => m.id === 'u-thibault')?.id
+    || null;
+}
+function memberIdFromIdentity(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  return state.team.find(m =>
+    String(m.id || '').toLowerCase() === raw
+    || String(m.name || '').trim().toLowerCase() === raw
+  )?.id || null;
+}
+function memberLabel(value) {
+  const id = memberIdFromIdentity(value);
+  return id ? teamName(id) : String(value || 'Utilisateur');
+}
 function canManageProject(p) { return Boolean(p) && (isAdmin() || p.owner === state.currentUser.id); }
 function canEditReport(report) { return Boolean(report) && (isAdmin() || report.personId === state.currentUser.id); }
+function canCreateReportFor(memberId) { return isAdmin() || memberId === state.currentUser.id; }
+function visibleReportMembers() {
+  return isAdmin() ? state.team : state.team.filter(m => m.id === state.currentUser.id);
+}
 function teamPicker(targetId, selectedId) {
   const selected = selectedId || state.currentUser.id;
   return `<div class="team-picker" data-picker="${targetId}"><input type="hidden" id="${targetId}" value="${selected}" />${state.team.map(m => `<button type="button" class="team-choice ${m.id === selected ? 'active' : ''}" data-team-target="${targetId}" data-team-value="${m.id}"><span>${personInitials(m.name)}</span><b>${esc(m.name)}</b><small>${esc(m.role)}</small></button>`).join('')}</div>`;
+}
+
+// PILOT-PROJ-013 / PILOT-UI-041 — participants projet multiples, administrés côté Direction.
+function projectMemberIds(p) {
+  return [...new Set([
+    ...(Array.isArray(p?.members) ? p.members : []),
+    p?.owner
+  ].filter(Boolean))];
+}
+
+function projectMemberPicker(selectedIds = [], ownerId = null) {
+  const selected = new Set([...selectedIds, ownerId].filter(Boolean));
+  return `<div class="team-picker" data-project-members>${state.team.map(m => `<button type="button" class="team-choice ${selected.has(m.id) ? 'active' : ''}" data-project-member="${m.id}" aria-pressed="${selected.has(m.id) ? 'true' : 'false'}"><span>${personInitials(m.name)}</span><b>${esc(m.name)}</b><small>${esc(m.role)} · ${m.authUserId ? 'compte actif' : 'accès à créer'}</small></button>`).join('')}</div>`;
+}
+
+function selectedProjectMembers(ownerId, fallbackMembers = []) {
+  if (!isAdmin()) {
+    return [...new Set([...(fallbackMembers || []), state.currentUser.id, ownerId].filter(Boolean))];
+  }
+  const selected = [...document.querySelectorAll('[data-project-member].active')]
+    .map(el => el.dataset.projectMember)
+    .filter(Boolean);
+  return [...new Set([...selected, ownerId].filter(Boolean))];
+}
+
+function taskAssignableMemberIds(projectId) {
+  if (projectId) return projectMemberIds(project(projectId));
+  return isAdmin() ? state.team.map(m => m.id) : [state.currentUser.id];
+}
+
+function taskAssigneeAllowed(projectId, memberId) {
+  return taskAssignableMemberIds(projectId).includes(memberId);
+}
+
+function refreshTaskOwnerAvailability(projectId) {
+  const allowed = new Set(taskAssignableMemberIds(projectId));
+  const hidden = document.querySelector('#taskOwner');
+  let selected = hidden?.value || state.currentUser.id;
+  if (!allowed.has(selected)) {
+    selected = allowed.has(state.currentUser.id) ? state.currentUser.id : [...allowed][0] || state.currentUser.id;
+    if (hidden) hidden.value = selected;
+  }
+  document.querySelectorAll('[data-team-target="taskOwner"]').forEach(btn => {
+    const enabled = allowed.has(btn.dataset.teamValue);
+    btn.disabled = !enabled;
+    btn.classList.toggle('active', enabled && btn.dataset.teamValue === selected);
+    btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+    btn.title = enabled ? '' : 'Cette personne ne participe pas à ce projet';
+  });
 }
 
 function ensureRuntimeState() {
@@ -208,7 +278,10 @@ function ensureRuntimeState() {
   state.dailyReports.forEach(report => {
     if (report.source === 'ai' && !report.sourceAgent) report.sourceAgent = aiAgentsForPerson(report.personId)[0]?.id || null;
   });
-  state.projects.forEach(p => { if (typeof p.archived !== 'boolean') p.archived = false; });
+  state.projects.forEach(p => {
+    if (typeof p.archived !== 'boolean') p.archived = false;
+    p.members = projectMemberIds(p);
+  });
   state.notifications = state.notifications.filter(n => !(n.type === 'approval_required' && !n.changeRequestId && !n.projectId));
   state.notifications.forEach(n => {
     if (typeof n.read !== 'boolean') n.read = Boolean(n.readAt);
@@ -220,9 +293,22 @@ function pendingCompletionRequest(projectId) {
   return state.changeRequests.find(r => r.projectId === projectId && r.type === 'project_complete' && r.status === 'pending');
 }
 
-function upsertNotification({ severity='info', type='task_update', title, message, actionType='read', taskId=null, projectId=null, changeRequestId=null, groupKey=null, internalTag=TAGS.NOTIF_CREATE, increment=false, reactivate=false }) {
+function notificationRecipientId(notification) {
+  return notification?.recipientId || state.currentUser.id;
+}
+
+function isMyNotification(notification) {
+  return notificationRecipientId(notification) === state.currentUser.id;
+}
+
+function upsertNotification({ recipientId=null, severity='info', type='task_update', title, message, actionType='read', taskId=null, projectId=null, changeRequestId=null, groupKey=null, internalTag=TAGS.NOTIF_CREATE, increment=false, reactivate=false }) {
   ensureRuntimeState();
-  const existing = groupKey ? state.notifications.find(n => !n.resolved && n.groupKey === groupKey) : null;
+  const targetRecipientId = recipientId || state.currentUser.id;
+  const existing = groupKey ? state.notifications.find(n =>
+    !n.resolved
+    && n.groupKey === groupKey
+    && notificationRecipientId(n) === targetRecipientId
+  ) : null;
   if (existing) {
     existing.title = title;
     existing.message = message;
@@ -232,6 +318,7 @@ function upsertNotification({ severity='info', type='task_update', title, messag
     existing.taskId = taskId || existing.taskId || null;
     existing.projectId = projectId || existing.projectId || null;
     existing.changeRequestId = changeRequestId || existing.changeRequestId || null;
+    existing.recipientId = recipientId || existing.recipientId || null;
     existing.updatedAt = new Date().toISOString();
     if (increment || reactivate) { existing.read = false; existing.readAt = null; }
     if (increment) existing.count = Number(existing.count || 1) + 1;
@@ -239,7 +326,7 @@ function upsertNotification({ severity='info', type='task_update', title, messag
     return existing;
   }
   const notification = {
-    id: crypto.randomUUID(), severity, type, title, message, actionType,
+    id: crypto.randomUUID(), recipientId, severity, type, title, message, actionType,
     taskId, projectId, changeRequestId, groupKey, internalTag,
     count: 1, read: false, resolved: false, readAt: null, resolvedAt: null,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
@@ -252,7 +339,7 @@ function upsertNotification({ severity='info', type='task_update', title, messag
 function refreshSmartNotifications() {
   ensureRuntimeState();
   let changed = false;
-  state.notifications.filter(n => !n.resolved && (n.type === 'deadline' || n.type === 'blocker')).forEach(n => {
+  state.notifications.filter(n => isMyNotification(n) && !n.resolved && (n.type === 'deadline' || n.type === 'blocker')).forEach(n => {
     if (n.type === 'deadline') {
       const t = task(n.taskId);
       const stillActive = t && t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < new Date();
@@ -266,13 +353,13 @@ function refreshSmartNotifications() {
   });
   state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < new Date() && (!t.projectId || !project(t.projectId)?.archived)).forEach(t => {
     const key = `deadline:${t.id}`;
-    const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
+    const before = state.notifications.find(n => isMyNotification(n) && !n.resolved && n.groupKey === key);
     upsertNotification({ severity:'warning', type:'deadline', title:'Échéance dépassée', message:`${t.title} · échéance ${formatDate(t.dueAt)}`, actionType:'edit_task', taskId:t.id, projectId:t.projectId, groupKey:key, internalTag:TAGS.NOTIF_DEADLINE });
     if (!before) { changed = true; trace(TAGS.SMART_ALERTS, 'Alerte échéance générée', { taskId:t.id }); }
   });
   state.projects.filter(p => p.blocker && p.status !== 'completed' && !p.archived).forEach(p => {
     const key = `blocker:${p.id}`;
-    const before = state.notifications.find(n => !n.resolved && n.groupKey === key);
+    const before = state.notifications.find(n => isMyNotification(n) && !n.resolved && n.groupKey === key);
     upsertNotification({ severity:'warning', type:'blocker', title:'Blocage projet', message:`${p.name} · ${p.blocker}`, actionType:'open_project', projectId:p.id, groupKey:key, internalTag:TAGS.NOTIF_BLOCKER });
     if (!before) { changed = true; trace(TAGS.SMART_ALERTS, 'Alerte blocage générée', { projectId:p.id }); }
   });
@@ -288,13 +375,14 @@ function queueProjectCompletion(projectId, { sourceType='manual', requestedBy=nu
   if (already) return already;
   const request = {
     id: crypto.randomUUID(), type:'project_complete', projectId, status:'pending',
-    requestedBy, sourceType, note, requestedAt:new Date().toISOString(),
+    requestedBy, requestedByMemberId:state.currentUser.id, sourceType, note, requestedAt:new Date().toISOString(),
     proposed:{ status:'completed', progress:100 }
   };
   state.changeRequests.unshift(request);
   upsertNotification({
+    recipientId:adminMemberId() || state.currentUser.id,
     severity:'action', type:'approval_required', title:'Validation projet demandée',
-    message:`${p.name} · passage en Terminé`, actionType:'approval', projectId,
+    message:`${p.name} · passage en Terminé · demandé par ${memberLabel(state.currentUser.id)}`, actionType:'approval', projectId,
     changeRequestId:request.id, groupKey:`approval:${request.id}`, internalTag:TAGS.NOTIF_APPROVAL
   });
   addActivity({ actor: requestedBy, projectId, text:`Passage en Terminé proposé${note ? ` · ${note}` : ''}`, internalTag:TAGS.PROJECT_COMPLETE_REQUEST });
@@ -314,7 +402,7 @@ function addActivity({ actor = null, projectId = null, text, internalTag }) {
 }
 
 function unreadNotifications() {
-  return state.notifications.filter(n => !n.resolved && !n.read).length;
+  return state.notifications.filter(n => isMyNotification(n) && !n.resolved && !n.read).length;
 }
 
 function layout(content) {
@@ -334,6 +422,7 @@ function layout(content) {
           <div class="mobile-brand">SpeedArti <span>Pilotage</span></div>
           <div class="top-actions">
             <button class="quick-create-btn" id="quickCreateBtn" title="Actions rapides"><span>＋</span><b>Créer</b></button>
+            <button class="icon-btn" id="refreshRemoteBtn" aria-label="Actualiser les données équipe" title="Actualiser les données équipe">↻</button>
             <button class="icon-btn search-btn" id="searchBtn" aria-label="Rechercher">⌕</button>
             <button class="icon-btn notif-btn" id="notificationBtn" aria-label="Notifications">♢${unread ? `<b>${unread}</b>` : ''}</button>
             <span class="avatar" title="${esc(state.currentUser.name || 'Utilisateur')}" aria-label="Utilisateur ${esc(state.currentUser.name || 'Utilisateur')}">${esc(state.currentUser.initials)}</span>
@@ -383,6 +472,7 @@ function taskCompletionSummary(projectId) {
 
 function pendingApprovals() {
   ensureRuntimeState();
+  if (!isAdmin()) return [];
   return state.changeRequests.filter(r => r.status === 'pending' && !project(r.projectId)?.archived);
 }
 
@@ -494,7 +584,9 @@ function collectAutomaticDailyReports(reportDate = dailyReportDate) {
 }
 
 function teamDailySummary(reportDate) {
-  const reports = dailyReportsForDate(reportDate);
+  const scopeMembers = visibleReportMembers();
+  const scopeIds = new Set(scopeMembers.map(m => m.id));
+  const reports = dailyReportsForDate(reportDate).filter(r => scopeIds.has(r.personId));
   const unique = values => [...new Set(values.filter(Boolean))];
   const achievements = unique(reports.flatMap(r => r.achievements || []));
   const blockers = unique(reports.flatMap(r => r.blockers || []));
@@ -504,7 +596,7 @@ function teamDailySummary(reportDate) {
   const validated = reports.filter(r => r.validatedAt).length;
   return {
     received,
-    expected: state.team.length,
+    expected: scopeMembers.length,
     sources,
     expectedSources: activeAiAgents().length,
     validated,
@@ -512,7 +604,7 @@ function teamDailySummary(reportDate) {
     blockers: blockers.length,
     nextSteps: nextSteps.length,
     text: received
-      ? `${received}/${state.team.length} personnes couvertes · ${sources} source${sources > 1 ? 's' : ''} reçue${sources > 1 ? 's' : ''} · ${achievements.length} réalisation${achievements.length > 1 ? 's' : ''} · ${blockers.length} blocage${blockers.length > 1 ? 's' : ''}.`
+      ? `${received}/${scopeMembers.length} personne${scopeMembers.length > 1 ? 's' : ''} couverte${scopeMembers.length > 1 ? 's' : ''} · ${sources} source${sources > 1 ? 's' : ''} reçue${sources > 1 ? 's' : ''} · ${achievements.length} réalisation${achievements.length > 1 ? 's' : ''} · ${blockers.length} blocage${blockers.length > 1 ? 's' : ''}.`
       : 'Aucun compte rendu reçu pour cette journée.'
   };
 }
@@ -523,7 +615,7 @@ function renderToday() {
   const myTasks = state.tasks.filter(t => t.assignedTo === state.currentUser.id && t.scheduledFor === today && t.status !== 'completed' && (!t.projectId || !project(t.projectId)?.archived));
   const blocked = state.projects.filter(p => !p.archived && (p.status === 'blocked' || p.blocker)).slice(0, 3);
   const toPlan = state.tasks.filter(t => t.needsPlanning && t.planningStatus === 'unplanned').length;
-  const approvals = state.notifications.filter(n => !n.resolved && n.type === 'approval_required').length;
+  const approvals = pendingApprovals().length;
   const events = state.calendarEvents.filter(e => e.at.startsWith(today));
 
   const overdue = state.tasks.filter(t => t.status !== 'completed' && t.dueAt && new Date(t.dueAt) < new Date() && (!t.projectId || !project(t.projectId)?.archived)).length;
@@ -560,20 +652,26 @@ function renderToday() {
         <div class="watch-list">${blocked.map(p => `<button class="watch-row" data-project="${p.id}"><span class="dot ${p.status === 'blocked' ? 'red' : 'amber'}"></span><div><strong>${esc(p.name)}</strong><small>${esc(p.blocker || p.nextAction)}</small></div></button>`).join('')}</div>
       </div>
       <div>
-        <div class="section-title"><h2>Équipe</h2><button class="text-button" id="openTeamWorkload">Voir la charge →</button></div>
-        <div class="team-list">
-          ${state.team.filter(m => m.id !== state.currentUser.id).map(m => {
-            const pending = state.tasks.filter(t => t.assignedTo === m.id && t.status !== 'completed').length;
-            const blockers = state.projects.filter(p => p.owner === m.id && p.blocker).length;
-            return `<button class="team-row team-row-button" data-team-planning="${m.id}"><div><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small></div><span>${pending} tâches · ${blockers ? `${blockers} blocage` : 'Tout va bien'} →</span></button>`;
-          }).join('')}
-        </div>
+        ${isAdmin() ? `
+          <div class="section-title"><h2>Équipe</h2><button class="text-button" id="openTeamWorkload">Voir la charge →</button></div>
+          <div class="team-list">
+            ${state.team.filter(m => m.id !== state.currentUser.id).map(m => {
+              const pending = state.tasks.filter(t => t.assignedTo === m.id && t.status !== 'completed').length;
+              const blockers = state.projects.filter(p => p.owner === m.id && p.blocker).length;
+              return `<button class="team-row team-row-button" data-team-planning="${m.id}"><div><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small></div><span>${pending} tâches · ${blockers ? `${blockers} blocage` : 'Tout va bien'} →</span></button>`;
+            }).join('')}
+          </div>`
+        : `
+          <div class="section-title"><h2>Mes projets accessibles</h2><button class="text-button" data-page="projects">Voir les projets →</button></div>
+          <div class="team-list">
+            ${state.projects.filter(p => !p.archived).slice(0,4).map(p => `<button class="team-row team-row-button" data-project="${p.id}"><div><strong>${esc(p.name)}</strong><small>${p.owner === state.currentUser.id ? 'Responsable' : 'Participant'} · ${projectMemberIds(p).length} membre${projectMemberIds(p).length > 1 ? 's' : ''}</small></div><span>${p.progress} % →</span></button>`).join('') || '<div class="empty-line">Aucun projet accessible.</div>'}
+          </div>`}
       </div>
     </section>
 
     ${pendingApprovals().length ? `<section class="section decisions-box">
       <div class="section-title"><h2>Décisions à prendre</h2><button class="text-button" id="openNotifFromToday">Tout voir →</button></div>
-      <div class="decision-list">${pendingApprovals().slice(0,3).map(r => { const p=project(r.projectId); return `<button class="decision-row" data-approval="${r.id}"><div><strong>${esc(p?.name || 'Projet')}</strong><small>Passage en Terminé demandé par ${esc(r.requestedBy || 'IA')}</small></div><span>Examiner →</span></button>`; }).join('')}</div>
+      <div class="decision-list">${pendingApprovals().slice(0,3).map(r => { const p=project(r.projectId); return `<button class="decision-row" data-approval="${r.id}"><div><strong>${esc(p?.name || 'Projet')}</strong><small>Passage en Terminé demandé par ${esc(memberLabel(r.requestedByMemberId || r.requestedBy || 'IA'))}</small></div><span>Examiner →</span></button>`; }).join('')}</div>
     </section>` : ''}
     <section class="section attention-box">
       <div class="section-title"><h2>À traiter</h2></div>
@@ -646,13 +744,13 @@ function renderProjects() {
     return p.status === projectFilter;
   });
 
-  return pageHeader('Projets', 'Vue simple de l’état des projets', '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>') + `
+  return pageHeader('Projets', isAdmin() ? 'Vue simple de l’état de tous les projets' : 'Projets dont tu es responsable ou participant', '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>') + `
     <div class="tabs">
       ${filters.map(([value,label]) => `<button class="${projectFilter === value ? 'active' : ''}" data-project-filter="${value}">${label}</button>`).join('')}
     </div>
     <div class="project-list">
       ${visibleProjects.map(p => { const summary=taskCompletionSummary(p.id); const pending=pendingCompletionRequest(p.id); return `<button class="project-row" data-project="${p.id}">
-        <div class="project-main"><div class="project-title-line"><strong>${esc(p.name)}</strong>${statusBadge(p.status)}${priorityBadge(p.priority)}${pending ? '<span class="badge status-to_validate">Validation</span>' : ''}</div><small>${esc(teamName(p.owner))} · ${summary.done}/${summary.total} tâches terminées</small></div>
+        <div class="project-main"><div class="project-title-line"><strong>${esc(p.name)}</strong>${statusBadge(p.status)}${priorityBadge(p.priority)}${pending ? '<span class="badge status-to_validate">Validation</span>' : ''}</div><small>${esc(teamName(p.owner))} · ${projectMemberIds(p).length} participant${projectMemberIds(p).length > 1 ? 's' : ''} · ${summary.done}/${summary.total} tâches terminées</small></div>
         <div class="project-progress"><span>${p.progress} %</span><div class="progress"><i style="width:${p.progress}%"></i></div></div>
         <div class="project-context"><small>${p.blocker ? 'Blocage' : 'Prochaine action'}</small><span>${esc(p.blocker || p.nextAction || 'À définir')}</span></div>
       </button>`; }).join('') || `<div class="empty-state">Aucun projet dans cette vue.</div>`}
@@ -671,10 +769,11 @@ function renderProjectDetail(id) {
     <div class="project-detail-head"><div>${statusBadge(p.status)} ${priorityBadge(p.priority)} <span class="owner-pill">${esc(teamName(p.owner))}</span></div><strong>${p.progress} %</strong></div>
     <div class="progress large"><i style="width:${p.progress}%"></i></div>
     <section class="section info-grid">
-      <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong>${p.blocker && !p.archived ? `<button class="clear-blocker-btn" data-clear-blocker="${p.id}">Lever le blocage</button>` : ''}</div>
+      <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong>${p.blocker && !p.archived && canManageProject(p) ? `<button class="clear-blocker-btn" data-clear-blocker="${p.id}">Lever le blocage</button>` : ''}</div>
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
+      <div><small>Participants</small><strong>${projectMemberIds(p).map(id => esc(teamName(id))).join(' · ') || 'Aucun'}</strong></div>
     </section>
-    ${pendingCompletionRequest(p.id) ? `<section class="approval-banner"><div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la décision n’est pas validée.</small></div><button class="primary-btn" data-approval="${pendingCompletionRequest(p.id).id}">Examiner</button></section>` : ''}
+    ${pendingCompletionRequest(p.id) ? `<section class="approval-banner"><div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la Direction n’a pas décidé.</small></div>${isAdmin() ? `<button class="primary-btn" data-approval="${pendingCompletionRequest(p.id).id}">Examiner</button>` : `<span class="owner-pill">En attente Direction</span>`}</section>` : ''}
     <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
@@ -783,7 +882,7 @@ function renderDailyReportCard(member, reports) {
     <header><div class="report-person"><span>${personInitials(member.name)}</span><div><strong>${esc(member.name)}</strong><small>${esc(member.role)} · ${activeAgents.length} IA active${activeAgents.length > 1 ? 's' : ''}</small></div></div><span class="report-status missing">Manquant</span></header>
     <div class="report-agent-chips">${activeAgents.map(a => `<span>${esc(a.name)}</span>`).join('')}${plannedAgents.map(a => `<span class="planned">${esc(a.name)} · prévu</span>`).join('')}</div>
     <div class="report-missing-body"><strong>Aucun compte rendu pour cette journée.</strong><small>Chaque IA active pourra envoyer son propre mini compte rendu. Pilotage les consolidera par personne.</small></div>
-    <footer><button class="secondary-btn" data-report-new-person="${member.id}">+ Ajouter manuellement</button></footer>
+    <footer>${canCreateReportFor(member.id) ? `<button class="secondary-btn" data-report-new-person="${member.id}">+ Ajouter manuellement</button>` : `<span class="form-note">Saisie réservée à ${esc(member.name)} ou à la Direction.</span>`}</footer>
   </article>`;
   const consolidated = consolidatePersonDailyReports(member.id, dailyReportDate);
   const projectNames = consolidated.projectIds.map(id => project(id)?.name).filter(Boolean);
@@ -799,16 +898,18 @@ function renderDailyReportCard(member, reports) {
       ${reports.map(report => `<div class="report-source-row"><div class="report-source-meta"><span class="source-badge ${report.source === 'manual' ? 'manual' : 'ai'}">${esc(reportSourceLabel(report))}</span><p>${esc(report.summary || 'Sans résumé')}</p></div><div class="report-source-actions"><span class="report-status ${report.validatedAt ? 'validated' : 'draft'}">${report.validatedAt ? 'Validé' : 'À relire'}</span>${canEditReport(report) && !report.validatedAt ? `<button class="secondary-btn" data-edit-report="${report.id}">Modifier</button>` : ''}${report.validatedAt || !isAdmin() ? '' : `<button class="primary-btn" data-validate-report="${report.id}">Valider</button>`}</div></div>`).join('')}
     </div>
     ${projectNames.length ? `<div class="report-projects">${projectNames.map(name => `<span>${esc(name)}</span>`).join('')}</div>` : ''}
-    <footer><small>${reports.length} compte${reports.length > 1 ? 's' : ''} rendu${reports.length > 1 ? 's' : ''} consolidé${reports.length > 1 ? 's' : ''}</small><div><button class="secondary-btn" data-report-new-person="${member.id}">+ Complément manuel</button></div></footer>
+    <footer><small>${reports.length} compte${reports.length > 1 ? 's' : ''} rendu${reports.length > 1 ? 's' : ''} consolidé${reports.length > 1 ? 's' : ''}</small><div>${canCreateReportFor(member.id) ? `<button class="secondary-btn" data-report-new-person="${member.id}">+ Complément manuel</button>` : ''}</div></footer>
   </article>`;
 }
 
 function renderDailyReports() {
   const summary = teamDailySummary(dailyReportDate);
-  const members = dailyReportPersonFilter === 'all' ? state.team : state.team.filter(m => m.id === dailyReportPersonFilter);
-  return pageHeader('Comptes rendus', 'Synthèse quotidienne de l’équipe et des sources connectées', '<div class="header-actions report-header-actions"><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
+  const scopeMembers = visibleReportMembers();
+  const members = dailyReportPersonFilter === 'all' ? scopeMembers : scopeMembers.filter(m => m.id === dailyReportPersonFilter);
+  const subtitle = isAdmin() ? 'Synthèse quotidienne de l’équipe et des sources connectées' : 'Ton compte rendu quotidien et les sources qui te concernent';
+  return pageHeader('Comptes rendus', subtitle, '<div class="header-actions report-header-actions"><button class="primary-btn" data-action="new-report">+ Ajouter manuellement</button></div>') + `
     <section class="report-automation-banner"><div><span>✦</span><div><strong>Automatisation multi-IA prévue</strong><small>Une personne peut utiliser plusieurs IA. Chaque agent envoie uniquement son mini compte rendu autorisé ; Pilotage les regroupe ensuite par personne et par journée, sans que les IA lisent les conversations des autres.</small></div></div></section>
-    <div class="toolbar report-toolbar"><label class="report-date-field"><span>Journée</span><input id="reportDateFilter" type="date" value="${dailyReportDate}" /></label><select id="reportPersonFilter"><option value="all">Toute l’équipe</option>${state.team.map(m => `<option value="${m.id}" ${dailyReportPersonFilter === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
+    <div class="toolbar report-toolbar"><label class="report-date-field"><span>Journée</span><input id="reportDateFilter" type="date" value="${dailyReportDate}" /></label>${isAdmin() ? `<select id="reportPersonFilter"><option value="all">Toute l’équipe</option>${scopeMembers.map(m => `<option value="${m.id}" ${dailyReportPersonFilter === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>` : `<span class="owner-pill">${esc(teamName(state.currentUser.id))}</span>`}</div>
     <section class="team-report-summary">
       <div class="team-report-main"><span class="report-progress-ring large">${summary.received}/${summary.expected}</span><div><small>SYNTHÈSE ÉQUIPE</small><h2>${esc(summary.text)}</h2></div></div>
       <div class="team-report-stats"><span><b>${summary.achievements}</b><small>Réalisations</small></span><span class="${summary.blockers ? 'stat-warning' : ''}"><b>${summary.blockers}</b><small>Blocages</small></span><span><b>${summary.nextSteps}</b><small>Suites</small></span><span><b>${summary.sources}</b><small>Sources reçues</small></span><span class="${summary.validated === summary.sources && summary.sources ? 'stat-ok' : ''}"><b>${summary.validated}</b><small>Sources validées</small></span></div>
@@ -827,7 +928,9 @@ function renderDailyReportModal() {
   const aiLocked = report?.source === 'ai';
   const personField = aiLocked
     ? `<div class="form-field form-field-full"><span>Personne</span><div class="report-locked-source"><b>${esc(teamName(selectedPerson))}</b><small>Source liée à ${esc(reportSourceLabel(report))}</small></div><input type="hidden" id="dailyReportPerson" value="${selectedPerson}" /></div>`
-    : `<label class="form-field form-field-full"><span>Personne</span>${teamPicker('dailyReportPerson', selectedPerson)}</label>`;
+    : isAdmin()
+      ? `<label class="form-field form-field-full"><span>Personne</span>${teamPicker('dailyReportPerson', selectedPerson)}</label>`
+      : `<div class="form-field form-field-full"><span>Personne</span><div class="report-locked-source"><b>${esc(teamName(state.currentUser.id))}</b><small>Tu peux saisir et modifier uniquement ton propre compte rendu.</small></div><input type="hidden" id="dailyReportPerson" value="${state.currentUser.id}" /></div>`;
   return `<div class="modal-backdrop" id="dailyReportBackdrop"></div><div class="modal-card report-modal" role="dialog" aria-modal="true">
     <header><div><small>${report ? 'MODIFIER' : 'AJOUT MANUEL'}</small><h2>${report ? 'Compte rendu quotidien' : 'Ajouter un compte rendu'}</h2></div><button class="icon-btn" id="closeDailyReport">×</button></header>
     <div class="form-grid">
@@ -845,6 +948,11 @@ function renderDailyReportModal() {
 }
 
 function openDailyReportModal(reportId = null, personId = null) {
+  if (!isAdmin()) {
+    const report = reportId ? state.dailyReports.find(r => r.id === reportId) : null;
+    if (report && report.personId !== state.currentUser.id) return;
+    personId = state.currentUser.id;
+  }
   dailyReportEditId = reportId;
   dailyReportPresetPersonId = reportId ? null : (personId || null);
   dailyReportModalOpen = true;
@@ -871,6 +979,10 @@ function closeDailyReportModal() {
 
 function saveDailyReportFromForm() {
   const personId = document.querySelector('#dailyReportPerson')?.value || state.currentUser.id;
+  if (!isAdmin() && personId !== state.currentUser.id) {
+    window.alert('Tu peux enregistrer uniquement ton propre compte rendu.');
+    return;
+  }
   const reportDate = document.querySelector('#dailyReportDateInput')?.value || dailyReportDate;
   const summaryInput = document.querySelector('#dailyReportSummary');
   const summary = summaryInput?.value.trim() || '';
@@ -944,7 +1056,8 @@ function renderQuickActionModal() {
 }
 
 function renderNotifications() {
-  const active = state.notifications.filter(n => !n.resolved).filter(n => {
+  const myNotifications = state.notifications.filter(isMyNotification);
+  const active = myNotifications.filter(n => !n.resolved).filter(n => {
     if (notificationFilter === 'all') return true;
     if (notificationFilter === 'action') return n.severity === 'action';
     if (notificationFilter === 'warning') return n.severity === 'warning';
@@ -960,7 +1073,7 @@ function renderNotifications() {
     return `<button class="text-button" data-notif-read="${n.id}">Marquer lu</button>`;
   };
   return `<div class="drawer-backdrop" id="drawerBackdrop"></div><aside class="notification-drawer">
-    <header><div><h2>Notifications</h2><small>${state.notifications.filter(n => !n.resolved).length} active${state.notifications.filter(n => !n.resolved).length > 1 ? 's' : ''} · ${unreadNotifications()} non lue${unreadNotifications() > 1 ? 's' : ''}</small></div><button class="icon-btn" id="closeNotif">×</button></header>
+    <header><div><h2>Notifications</h2><small>${myNotifications.filter(n => !n.resolved).length} active${myNotifications.filter(n => !n.resolved).length > 1 ? 's' : ''} · ${unreadNotifications()} non lue${unreadNotifications() > 1 ? 's' : ''}</small></div><button class="icon-btn" id="closeNotif">×</button></header>
     <div class="drawer-tabs">
       <button class="${notificationFilter === 'all' ? 'active' : ''}" data-notif-filter="all">Toutes</button>
       <button class="${notificationFilter === 'action' ? 'active' : ''}" data-notif-filter="action">À traiter</button>
@@ -1030,6 +1143,11 @@ function renderProjectModal() {
     <div class="form-grid">
       <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" value="${esc(existing?.name || '')}" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
       <div class="form-field form-field-full"><span>Responsable</span>${isAdmin() ? teamPicker('projectOwner', owner) : `<input type="hidden" id="projectOwner" value="${state.currentUser.id}" /><div class="owner-pill">${esc(teamName(state.currentUser.id))}</div>`}</div>
+      ${isAdmin()
+        ? `<div class="form-field form-field-full"><span>Participants — plusieurs choix possibles</span>${projectMemberPicker(projectMemberIds(existing || { owner, members:[owner] }), owner)}<p class="form-note">Le responsable est toujours inclus automatiquement. Tu peux sélectionner Thibault, Anne-Sophie et Guillaume sur le même projet.</p></div>`
+        : existing
+          ? `<div class="form-field form-field-full"><span>Participants</span><div>${projectMemberIds(existing).map(id => `<span class="owner-pill">${esc(teamName(id))}</span>`).join(' ')}</div><p class="form-note">La composition de l’équipe projet est gérée par la Direction. Tes droits sur les tâches restent inchangés.</p></div>`
+          : ''}
       <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field"><span>État</span><select id="projectStatus">${Object.entries(statusLabels).filter(([value]) => existing || value !== 'completed').map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field form-field-full range-field"><span>Progression <output id="projectProgressValue">${progress} %</output></span><input id="projectProgress" type="range" min="0" max="100" step="5" value="${progress}" /></label>
@@ -1072,7 +1190,7 @@ function renderApprovalModal(requestId) {
   return `<div class="modal-backdrop" id="approvalBackdrop"></div><div class="modal-card approval-modal" role="dialog" aria-modal="true">
     <header><div><small>VALIDATION HUMAINE</small><h2>Passer le projet en Terminé ?</h2></div><button class="icon-btn" id="closeApproval">×</button></header>
     <div class="approval-project"><span class="status-dot status-${p.status}"></span><div><strong>${esc(p.name)}</strong><small>État actuel : ${esc(statusLabels[p.status])} · ${p.progress} %</small></div></div>
-    <div class="approval-summary"><div><small>Demandé par</small><strong>${esc(request.requestedBy)}</strong></div><div><small>Action proposée</small><strong>Terminé · 100 %</strong></div></div>
+    <div class="approval-summary"><div><small>Demandé par</small><strong>${esc(memberLabel(request.requestedByMemberId || request.requestedBy))}</strong></div><div><small>Action proposée</small><strong>Terminé · 100 %</strong></div></div>
     ${request.note ? `<p class="approval-note">${esc(request.note)}</p>` : ''}
     <p class="form-note">La progression peut évoluer automatiquement, mais le passage officiel du projet en <strong>Terminé</strong> demande une décision humaine.</p>
     <footer>${isAdmin() ? `<button class="danger-ghost-btn" id="rejectApproval" data-request="${request.id}">Refuser</button><button class="primary-btn" id="approveApproval" data-request="${request.id}">Valider le passage en Terminé</button>` : `<span class="form-note">Décision réservée à la Direction.</span>`}</footer>
@@ -1084,7 +1202,7 @@ function renderDocumentModal() {
     <header><div><small>RÉFÉRENCE DRIVE</small><h2>Lier un document</h2></div><button class="icon-btn" id="closeDocumentModal">×</button></header>
     <div class="form-grid">
       <label class="form-field form-field-full"><span>Nom</span><input id="documentName" type="text" placeholder="Ex. Cahier fonctionnel V2" maxlength="140" /></label>
-      <label class="form-field form-field-full"><span>Projet</span><select id="documentProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="documentProject">${isAdmin() ? '<option value="">Sans projet</option>' : '<option value="">Sélectionner un projet</option>'}${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
       <label class="form-field"><span>Type</span><select id="documentType"><option>Document</option><option>Tableur</option><option>PDF</option><option>Plan</option></select></label>
       <label class="form-field form-field-full"><span>Lien Google Drive (optionnel)</span><input id="documentUrl" type="url" placeholder="https://drive.google.com/..." /></label>
     </div>
@@ -1225,6 +1343,7 @@ function markNotificationRead(id, shouldRender = true) {
 }
 
 function openApproval(requestId) {
+  if (!isAdmin()) return;
   const request = state.changeRequests.find(r => r.id === requestId && r.status === 'pending');
   if (!request) return;
   approvalRequestId = requestId;
@@ -1264,6 +1383,18 @@ function decideApproval(requestId, approved) {
   state.notifications.filter(n => n.changeRequestId === requestId).forEach(n => {
     n.read = true; n.resolved = true; n.readAt = n.readAt || new Date().toISOString(); n.resolvedAt = new Date().toISOString();
   });
+  const requesterId = memberIdFromIdentity(request.requestedByMemberId || request.requestedBy);
+  if (requesterId && requesterId !== state.currentUser.id) {
+    upsertNotification({
+      recipientId:requesterId,
+      severity:approved ? 'info' : 'warning',
+      type:'project_decision',
+      title:approved ? 'Projet clôturé' : 'Clôture refusée',
+      message:`${p.name} · ${approved ? 'passage en Terminé validé' : 'la demande de clôture a été refusée'}`,
+      actionType:'open_project', projectId:p.id,
+      groupKey:`project-decision:${request.id}:${requesterId}`, internalTag:TAGS.NOTIF_DECISION
+    });
+  }
   approvalRequestId = null;
   persist(approved ? TAGS.PROJECT_COMPLETE_APPROVE : TAGS.PROJECT_COMPLETE_REJECT, 'Décision validation projet', { projectId:p.id, requestId, approved });
   render();
@@ -1311,6 +1442,14 @@ function createTaskFromForm() {
   const scheduledFor = document.querySelector('#taskScheduledFor')?.value || null;
   const dueAt = toDueIso(document.querySelector('#taskDueAt')?.value || '');
 
+  if (!taskAssigneeAllowed(projectId, assignedTo)) {
+    window.alert(projectId
+      ? 'Le responsable de la tâche doit faire partie des participants du projet.'
+      : 'Sans projet, un membre peut créer une tâche uniquement pour lui-même. La Direction peut assigner toute l’équipe.');
+    refreshTaskOwnerAvailability(projectId);
+    return;
+  }
+
   if (taskEditId) {
     const existing = task(taskEditId);
     if (!existing) return;
@@ -1325,7 +1464,17 @@ function createTaskFromForm() {
       updatedAt: new Date().toISOString()
     });
     addActivity({ projectId, text: `Tâche modifiée : ${title}`, internalTag: TAGS.TASK_EDIT });
-    if (oldOwner !== assignedTo) addActivity({ projectId, text: `${title} assignée à ${teamName(assignedTo)}`, internalTag: TAGS.TASK_ASSIGN });
+    if (oldOwner !== assignedTo) {
+      addActivity({ projectId, text: `${title} assignée à ${teamName(assignedTo)}`, internalTag: TAGS.TASK_ASSIGN });
+      if (assignedTo !== state.currentUser.id) {
+        upsertNotification({
+          recipientId:assignedTo, severity:'info', type:'task_assignment',
+          title:'Tâche réassignée', message:`${title}${projectId ? ` · ${project(projectId)?.name || 'Projet'}` : ''}`,
+          actionType:'edit_task', taskId:existing.id, projectId,
+          groupKey:`task-assignment:${existing.id}:${assignedTo}`, internalTag:TAGS.NOTIF_ASSIGNMENT, reactivate:true
+        });
+      }
+    }
     if (oldScheduledFor !== scheduledFor || oldDueAt !== dueAt) addActivity({ projectId, text: `Planification mise à jour : ${title}`, internalTag: TAGS.TASK_SCHEDULE });
     persist(TAGS.TASK_EDIT, 'Tâche modifiée', { taskId: existing.id, oldProject, projectId, assignedTo, planningBucket, scheduledFor, dueAt });
   } else {
@@ -1336,6 +1485,14 @@ function createTaskFromForm() {
     };
     state.tasks.push(newTask);
     addActivity({ projectId, text: `Nouvelle tâche créée : ${title} · ${teamName(assignedTo)}`, internalTag: TAGS.TASK_CREATE });
+    if (assignedTo !== state.currentUser.id) {
+      upsertNotification({
+        recipientId:assignedTo, severity:'info', type:'task_assignment',
+        title:'Nouvelle tâche assignée', message:`${title}${projectId ? ` · ${project(projectId)?.name || 'Projet'}` : ''}`,
+        actionType:'edit_task', taskId:newTask.id, projectId,
+        groupKey:`task-assignment:${newTask.id}:${assignedTo}`, internalTag:TAGS.NOTIF_ASSIGNMENT
+      });
+    }
     persist(TAGS.TASK_CREATE, 'Tâche créée manuellement', { taskId: newTask.id, projectId, assignedTo, planningBucket, scheduledFor, dueAt });
   }
   taskModalOpen = false;
@@ -1381,23 +1538,29 @@ function createProjectFromForm() {
     const existing = project(projectEditId);
     if (!existing) return;
     const oldOwner = existing.owner;
+    const oldMembers = projectMemberIds(existing);
+    const members = selectedProjectMembers(owner, oldMembers);
     const oldProgress = Number(existing.progress || 0);
     const requestedCompletion = status === 'completed' && existing.status !== 'completed';
     const savedStatus = requestedCompletion ? existing.status : status;
     const savedProgress = progress;
-    Object.assign(existing, { name, owner, priority, status:savedStatus, progress:savedProgress, blocker, nextAction, updatedAt:new Date().toISOString() });
-    existing.members = [...new Set([...(existing.members || []), state.currentUser.id, owner])];
+    Object.assign(existing, { name, owner, priority, status:savedStatus, progress:savedProgress, blocker, nextAction, members, updatedAt:new Date().toISOString() });
     addActivity({ projectId: existing.id, text: `Projet mis à jour · ${savedProgress} % · ${statusLabels[savedStatus]}`, internalTag: TAGS.PROJECT_EDIT });
     if (requestedCompletion) { const request = queueProjectCompletion(existing.id, { sourceType:'manual', requestedBy:state.currentUser.name || teamName(state.currentUser.id), note:'Demande effectuée depuis la fiche projet' }); if (request) approvalRequestId = request.id; }
     if (oldOwner !== owner) addActivity({ projectId: existing.id, text: `Responsable projet : ${teamName(owner)}`, internalTag: TAGS.PROJECT_OWNER });
+    if ([...oldMembers].sort().join('|') !== [...members].sort().join('|')) {
+      addActivity({ projectId: existing.id, text: `Participants projet : ${members.map(teamName).join(', ')}`, internalTag: TAGS.PROJECT_MEMBERS });
+      trace(TAGS.PROJECT_MULTISELECT, 'Participants projet modifiés', { projectId:existing.id, members });
+    }
     if (oldProgress !== progress) addActivity({ projectId: existing.id, text: `Progression : ${oldProgress} % → ${progress} %`, internalTag: TAGS.PROJECT_PROGRESS });
-    persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, priority, status:existing.status, progress:existing.progress, blocker });
+    persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, members, priority, status:existing.status, progress:existing.progress, blocker });
   } else {
     const id = crypto.randomUUID();
-    const newProject = { id, name, owner, members:[...new Set([state.currentUser.id, owner])], status, priority, progress, blocker, nextAction, updatedAt:new Date().toISOString() };
+    const members = selectedProjectMembers(owner, [state.currentUser.id, owner]);
+    const newProject = { id, name, owner, members, status, priority, progress, blocker, nextAction, updatedAt:new Date().toISOString() };
     state.projects.unshift(newProject);
     addActivity({ projectId:id, text:`Nouveau projet créé : ${name}`, internalTag:TAGS.PROJECT_CREATE });
-    persist(TAGS.PROJECT_CREATE, 'Projet créé manuellement', { projectId:id, owner, priority, status });
+    persist(TAGS.PROJECT_CREATE, 'Projet créé manuellement', { projectId:id, owner, members, priority, status });
     selectedProjectId = id;
     currentPage = 'projects';
   }
@@ -1429,6 +1592,11 @@ function createDocumentFromForm() {
   const name = nameInput?.value.trim();
   if (!name) { nameInput?.classList.add('field-error'); nameInput?.focus(); return; }
   const projectId = document.querySelector('#documentProject')?.value || null;
+  if (!isAdmin() && !projectId) {
+    window.alert('Sélectionne un projet auquel tu as accès pour lier ce document.');
+    document.querySelector('#documentProject')?.focus();
+    return;
+  }
   const type = document.querySelector('#documentType')?.value || 'Document';
   const url = document.querySelector('#documentUrl')?.value.trim() || '';
   const id = crypto.randomUUID();
@@ -1576,7 +1744,7 @@ function openTeamPlanning(userId) {
 
 function markAllNotificationsRead() {
   const now = new Date().toISOString();
-  state.notifications.filter(n => !n.resolved && !n.read).forEach(n => { n.read=true; n.readAt=now; });
+  state.notifications.filter(n => isMyNotification(n) && !n.resolved && !n.read).forEach(n => { n.read=true; n.readAt=now; });
   persist(TAGS.NOTIF_BULK_READ, 'Toutes les notifications actives marquées lues', {});
   render();
 }
@@ -1686,6 +1854,24 @@ function openTeamWorkload() { teamWorkloadOpen=true; trace(TAGS.TEAM_WORKLOAD, '
 function closeTeamWorkload() { teamWorkloadOpen=false; render(); }
 
 function bindEvents() {
+  document.querySelector('#refreshRemoteBtn')?.addEventListener('click', async e => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    button.textContent = '…';
+    trace(TAGS.TEAM_REFRESH, 'Actualisation multi-utilisateur demandée');
+    try {
+      if (window.PILOTAGE_REMOTE?.refreshFromSupabase) {
+        await window.PILOTAGE_REMOTE.refreshFromSupabase();
+      } else {
+        button.disabled = false;
+        button.textContent = '↻';
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = '↻';
+      window.alert('Actualisation impossible pour le moment.');
+    }
+  });
   document.querySelector('#quickCreateBtn')?.addEventListener('click', openQuickAction);
   document.querySelector('#closeQuickAction')?.addEventListener('click', closeQuickAction);
   document.querySelector('#quickActionBackdrop')?.addEventListener('click', closeQuickAction);
@@ -1717,7 +1903,30 @@ function bindEvents() {
     const input = document.querySelector(`#${target}`);
     if (input) input.value = el.dataset.teamValue;
     document.querySelectorAll(`[data-team-target="${target}"]`).forEach(x => x.classList.toggle('active', x === el));
+    if (target === 'projectOwner' && isAdmin()) {
+      document.querySelectorAll('[data-project-member]').forEach(memberBtn => {
+        if (memberBtn.dataset.projectMember === el.dataset.teamValue) {
+          memberBtn.classList.add('active');
+          memberBtn.setAttribute('aria-pressed', 'true');
+        }
+      });
+    }
     trace(TAGS.TEAM_PICKER, 'Sélection responsable', { target, userId:el.dataset.teamValue });
+  }));
+  document.querySelectorAll('[data-project-member]').forEach(el => el.addEventListener('click', e => {
+    e.preventDefault();
+    const memberId = el.dataset.projectMember;
+    const ownerId = document.querySelector('#projectOwner')?.value || state.currentUser.id;
+    if (memberId === ownerId && el.classList.contains('active')) {
+      trace(TAGS.PROJECT_MULTISELECT, 'Responsable conservé parmi les participants', { memberId });
+      return;
+    }
+    el.classList.toggle('active');
+    el.setAttribute('aria-pressed', el.classList.contains('active') ? 'true' : 'false');
+    trace(TAGS.PROJECT_MULTISELECT, 'Sélection participant projet', {
+      memberId,
+      selected:el.classList.contains('active')
+    });
   }));
   document.querySelectorAll('[data-resolve]').forEach(el => el.addEventListener('click', () => resolveNotification(el.dataset.resolve)));
   document.querySelectorAll('[data-retry-notif]').forEach(el => el.addEventListener('click', () => retryNotification(el.dataset.retryNotif)));
@@ -1782,6 +1991,8 @@ function bindEvents() {
   document.querySelector('#taskModalBackdrop')?.addEventListener('click', closeTaskModal);
   document.querySelector('#saveTask')?.addEventListener('click', createTaskFromForm);
   document.querySelector('#taskTitle')?.addEventListener('keydown', e => { if (e.key === 'Enter') createTaskFromForm(); });
+  document.querySelector('#taskProject')?.addEventListener('change', e => refreshTaskOwnerAvailability(e.target.value || null));
+  if (taskModalOpen) refreshTaskOwnerAvailability(document.querySelector('#taskProject')?.value || null);
 
   document.querySelector('#closeProjectModal')?.addEventListener('click', closeProjectModal);
   document.querySelector('#cancelProjectModal')?.addEventListener('click', closeProjectModal);

@@ -595,8 +595,30 @@
       read_at: n.readAt || (n.read ? new Date().toISOString() : null),
       resolved_at: n.resolvedAt || (n.resolved ? new Date().toISOString() : null)
     }));
-    await upsertReturning('notifications', rows);
-    trace(TAGS.NOTIF_SYNC, 'Notifications synchronisées', { count: items.length });
+
+    const currentMemberUuid = memberUuid(currentMember.client_key);
+    const canUpdateForeign = currentMember.role === 'admin';
+    const writable = rows.filter(row => canUpdateForeign || row.recipient_member_id === currentMemberUuid);
+    const foreignInsertOnly = rows.filter(row => !canUpdateForeign && row.recipient_member_id !== currentMemberUuid);
+
+    if (writable.length) {
+      const { error } = await client
+        .from('notifications')
+        .upsert(writable, { onConflict: 'client_key' });
+      if (error) throw new Error(`notifications: ${error.message}`);
+    }
+
+    if (foreignInsertOnly.length) {
+      const { error } = await client
+        .from('notifications')
+        .upsert(foreignInsertOnly, { onConflict: 'client_key', ignoreDuplicates: true });
+      if (error) throw new Error(`notifications(cross-user): ${error.message}`);
+    }
+
+    trace(TAGS.NOTIF_SYNC, 'Notifications synchronisées', {
+      count: items.length,
+      crossUser: foreignInsertOnly.length
+    });
   }
 
   async function syncActivity(items) {
