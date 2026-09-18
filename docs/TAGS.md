@@ -38,3 +38,23 @@ Les balises sont internes et invisibles. Une balise existante n'est jamais recyc
 ## Balises antérieures conservées
 
 Toutes les balises V1 à V11 déjà présentes restent réservées à leur fonction historique et ne doivent pas être recyclées.
+
+
+## V13 — Passage production
+
+| Balise | Fonction | Zone | Statut |
+|---|---|---|---|
+| `PILOT-UI-040` | Horloge réelle : Aujourd’hui, Agenda, comptes rendus, report de tâche | `src/app.js` | Actif V13 |
+| `PILOT-SEC-002` | Mode production : contrôles de démo retirés de l’interface | `src/app.js` | Actif V13 |
+| `PILOT-PROJ-012` | Clôture officielle projet réservée à l’admin | Supabase RLS | Actif V13 |
+| `PILOT-REPORT-008` | Brouillon éditable par son auteur ; validation finale admin | Supabase RLS | Actif V13 |
+| `PILOT-SUPA-011` | `tasks.sort_order` en `bigint` pour accepter `Date.now()` | Supabase | Actif V13 |
+| `PILOT-AUTH-007` | Contrôle Pwned Passwords par k-anonymity avant inscription | `src/auth.js` | Actif V13 |
+
+### Règles V13
+
+- Supabase reste la source de vérité métier ; `localStorage` reste uniquement un cache/reprise.
+- Les dates opérationnelles proviennent de l’horloge locale de l’utilisateur, plus d’une date de démonstration figée.
+- Les commandes visibles de simulation IA, réinitialisation et sauvegarde/restauration de démo sont retirées de l’interface de production.
+- La clôture officielle d’un projet et la validation finale d’un compte rendu sont protégées côté base, pas seulement côté interface.
+- Le contrôle Pwned Passwords calcule SHA-1 localement et n’envoie que les 5 premiers caractères du hash à l’API de plage HIBP ; le mot de passe et son hash complet ne sont jamais transmis.
