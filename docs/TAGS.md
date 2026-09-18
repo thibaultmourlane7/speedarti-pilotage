@@ -117,3 +117,28 @@ Toutes les balises V1 à V11 déjà présentes restent réservées à leur fonct
 - Chaque requête est enregistrée dans `ai_requests`; les actions métier alimentent également l’activité.
 - La limite serveur est de 12 requêtes par minute et par agent.
 - `store:false` est utilisé pour les appels OpenAI de ce lot.
+
+
+## V16 — Remontées multi-IA
+
+| Balise | Fonction | Zone | Statut |
+|---|---|---|---|
+| `PILOT-AI-024` | Réception structurée d’un événement envoyé par une IA externe | Edge Function `pilotage-ai-ingest` + `ai_events` | Actif V16 |
+| `PILOT-AI-025` | Journalisation de l’événement dans l’activité Pilotage | Edge Function + `activity_log` | Actif V16 |
+| `PILOT-AI-026` | Consolidation automatique dans un compte rendu quotidien brouillon | Edge Function + `daily_reports` | Actif V16 |
+| `PILOT-AI-027` | Idempotence par `event_id` pour éviter les doublons | Edge Function + contrainte unique | Actif V16 |
+| `PILOT-SEC-003` | Authentification de chaque agent par jeton Bearer distinct, stocké haché | `ai_agent_tokens` + Edge Function | Actif V16 |
+| `PILOT-UI-044` | État des sources IA et flux du jour dans Comptes rendus | `src/app.js` | Actif V16 |
+| `PILOT-SUPA-013` | Chargement des événements IA récents depuis Supabase | `src/remote-sync.js` | Actif V16 |
+
+### Règles V16
+
+- Chaque IA externe possède son propre jeton d’ingestion.
+- Le jeton en clair n’est jamais stocké dans GitHub ni dans la base ; seul son SHA-256 est conservé.
+- Une IA ne peut remonter que pour la personne à laquelle son agent est rattaché.
+- Hors compte Direction, un agent ne peut associer un événement qu’à un projet accessible à son membre.
+- `task_completed` peut terminer une tâche existante identifiée exactement par son `client_key`.
+- Une donnée critique manquante n’est jamais devinée : projet/tâche inconnus = rejet explicite.
+- Chaque événement alimente l’activité et le compte rendu IA du jour en brouillon.
+- Un compte rendu déjà validé n’est jamais réouvert : un complément séparé est créé.
+- Les événements sont idempotents grâce à `event_id`.
