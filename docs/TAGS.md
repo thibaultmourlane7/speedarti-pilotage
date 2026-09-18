@@ -58,3 +58,35 @@ Toutes les balises V1 à V11 déjà présentes restent réservées à leur fonct
 - Les commandes visibles de simulation IA, réinitialisation et sauvegarde/restauration de démo sont retirées de l’interface de production.
 - La clôture officielle d’un projet et la validation finale d’un compte rendu sont protégées côté base, pas seulement côté interface.
 - Le contrôle Pwned Passwords calcule SHA-1 localement et n’envoie que les 5 premiers caractères du hash à l’API de plage HIBP ; le mot de passe et son hash complet ne sont jamais transmis.
+
+## V14 — Multi-utilisateur réel
+
+| Balise | Fonction | Zone | Statut |
+|---|---|---|---|
+| `PILOT-PROJ-013` | Membres multiples d’un projet, responsable toujours inclus | `src/app.js` + `project_members` | Actif V14 |
+| `PILOT-UI-041` | Multi-sélection des participants projet réservée à l’admin | `src/app.js` | Actif V14 |
+| `PILOT-UI-042` | Interface adaptée au rôle réel admin / membre | `src/app.js` | Actif V14 |
+| `PILOT-SUPA-012` | Actualisation manuelle des changements équipe via le bouton ↻ | `src/app.js` + V12.2 | Actif V14 |
+| `PILOT-TASK-008` | Une tâche de projet doit être assignée à un participant du projet | UI + trigger Supabase | Actif V14 |
+| `PILOT-NOTIF-013` | Notification croisée lors d’une assignation de tâche | UI + RLS Supabase | Actif V14 |
+| `PILOT-NOTIF-014` | Retour au demandeur après décision de clôture | UI + RLS Supabase | Actif V14 |
+| `PILOT-NOTIF-015` | Chaque membre n’affiche et ne traite que ses notifications | `src/app.js` + RLS | Actif V14 |
+| `PILOT-REPORT-009` | Un membre saisit/édite uniquement son compte rendu ; admin garde la vue équipe | `src/app.js` + RLS | Actif V14 |
+| `PILOT-DRIVE-002` | Un membre rattache un document à un projet accessible | `src/app.js` + RLS | Actif V14 |
+
+### Règles V14
+
+- Responsable unique + participants multiples.
+- Thibault/admin peut sélectionner 1, 2 ou 3 membres sur un projet.
+- Le responsable est toujours inclus.
+- Anne-Sophie peut être ajoutée avant la création de son compte.
+- Guillaume conserve création/modification des tâches et planification sur les projets accessibles.
+- Une tâche de projet ne peut être assignée qu’à un participant du projet.
+- Un membre non-admin ne modifie pas la composition de l’équipe projet.
+- Les demandes de clôture sont envoyées à la Direction ; la décision revient au demandeur.
+- Les notifications croisées restent privées : chaque membre n’affiche et ne traite que ses propres notifications.
+- Les validations finales de projet et de compte rendu restent réservées à l’admin.
+- Un membre voit/saisit son propre compte rendu ; la Direction conserve la synthèse équipe.
+- Un membre rattache un document à un projet accessible.
+- Le bouton ↻ récupère immédiatement les changements faits par un autre utilisateur.
+- Supabase reste la source de vérité et les protections V13 restent actives.
