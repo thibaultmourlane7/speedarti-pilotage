@@ -21,6 +21,7 @@
   let activeMember = null;
   let appLoaded = false;
   let uiObserver = null;
+  let uiPatchScheduled = false;
 
   function trace(tag, message, details = {}) {
     console.debug(`[${tag}] ${message}`, details);
@@ -253,12 +254,26 @@
       script.src = './src/app.bundle.js';
       script.defer = true;
       script.dataset.pilotageApp = 'true';
+
       script.addEventListener('load', () => {
-        appLoaded = true;
-        window.__PILOTAGE_APP_LOADED__ = true;
-        resolve();
+        // L'événement load peut être émis même si le bundle rencontre une
+        // erreur d'exécution. On vérifie donc que l'application a réellement
+        // rendu du contenu avant de considérer le chargement comme réussi.
+        setTimeout(() => {
+          if (!appRoot.innerHTML.trim()) {
+            reject(new Error('L’interface Pilotage ne s’est pas initialisée.'));
+            return;
+          }
+          appLoaded = true;
+          window.__PILOTAGE_APP_LOADED__ = true;
+          resolve();
+        }, 0);
       });
-      script.addEventListener('error', () => reject(new Error('Impossible de charger l’application Pilotage.')));
+
+      script.addEventListener('error', () => {
+        reject(new Error('Impossible de charger l’application Pilotage.'));
+      });
+
       document.body.appendChild(script);
     });
   }
@@ -267,36 +282,64 @@
     patchLiveUi();
 
     if (uiObserver) uiObserver.disconnect();
-    uiObserver = new MutationObserver(() => patchLiveUi());
+
+    // HOTFIX V12.1 :
+    // La V12 rappelait patchLiveUi à chaque mutation du DOM. Or patchLiveUi
+    // réécrivait lui-même le textContent de l'avatar et du titre, ce qui
+    // déclenchait une nouvelle mutation puis une boucle sans fin.
+    // On regroupe maintenant les mutations et patchLiveUi est idempotente.
+    uiObserver = new MutationObserver(() => {
+      if (uiPatchScheduled) return;
+      uiPatchScheduled = true;
+
+      queueMicrotask(() => {
+        uiPatchScheduled = false;
+        patchLiveUi();
+      });
+    });
+
     uiObserver.observe(appRoot, { childList: true, subtree: true });
 
     trace(TAGS.LIVE_UI, 'Corrections UI session active');
   }
 
   function patchLiveUi() {
+    if (!activeMember) return;
+
     const greeting = [...document.querySelectorAll('.page-header h1')]
       .find(el => el.textContent?.trim() === 'Bonjour Thibault');
-    if (greeting && activeMember) greeting.textContent = `Bonjour ${activeMember.display_name}`;
+
+    const desiredGreeting = `Bonjour ${activeMember.display_name}`;
+    if (greeting && greeting.textContent?.trim() !== desiredGreeting) {
+      greeting.textContent = desiredGreeting;
+    }
 
     const avatar = document.querySelector('.avatar');
-    if (avatar && activeMember) {
-      avatar.textContent = activeMember.initials || '';
+    if (!avatar) return;
+
+    const desiredInitials = activeMember.initials || '';
+    if (avatar.textContent !== desiredInitials) {
+      avatar.textContent = desiredInitials;
+    }
+
+    if (avatar.dataset.authBound !== 'true') {
       avatar.dataset.authBound = 'true';
       avatar.setAttribute('role', 'button');
       avatar.setAttribute('tabindex', '0');
       avatar.setAttribute('aria-label', 'Ouvrir le menu du compte');
       avatar.title = `${activeMember.display_name} — Supabase`;
+    }
 
-      if (avatar.dataset.accountListener !== 'true') {
-        avatar.dataset.accountListener = 'true';
-        avatar.addEventListener('click', () => toggleAccountMenu(avatar));
-        avatar.addEventListener('keydown', event => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            toggleAccountMenu(avatar);
-          }
-        });
-      }
+    if (avatar.dataset.accountListener !== 'true') {
+      avatar.dataset.accountListener = 'true';
+
+      avatar.addEventListener('click', () => toggleAccountMenu(avatar));
+      avatar.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          toggleAccountMenu(avatar);
+        }
+      });
     }
   }
 
@@ -345,20 +388,23 @@
   async function signOut() {
     try { await window.PILOTAGE_REMOTE?.flush?.(); }
     catch {}
+
     document.querySelector('#pilotageAccountMenu')?.remove();
     trace(TAGS.AUTH_SIGNOUT, 'Déconnexion');
+
     await client.auth.signOut();
     window.location.reload();
   }
 
   async function boot() {
-    trace(TAGS.AUTH_GATE, 'Initialisation Auth V12');
+    trace(TAGS.AUTH_GATE, 'Initialisation Auth V12.1');
     renderLoading();
 
     const config = window.PILOTAGE_SUPABASE;
     if (!config?.url || !config?.publishableKey) {
       return renderAuth('Configuration Supabase manquante.');
     }
+
     if (!window.supabase?.createClient) {
       return renderAuth('Le module Supabase n’a pas pu être chargé.');
     }
@@ -380,13 +426,16 @@
         if (!appLoaded) renderAuth();
         return;
       }
+
       if (event === 'SIGNED_IN' && !appLoaded) {
         setTimeout(() => activateSession(session), 0);
       }
     });
 
     const { data, error } = await client.auth.getSession();
-    if (error) return renderAuth('Impossible de vérifier la session Supabase.');
+    if (error) {
+      return renderAuth('Impossible de vérifier la session Supabase.');
+    }
 
     if (data?.session) await activateSession(data.session);
     else renderAuth();
