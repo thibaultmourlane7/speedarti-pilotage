@@ -1,0 +1,69 @@
+openapi: 3.1.0
+info:
+  title: SpeedArti Pilotage AI Ingest
+  version: "16.0"
+servers:
+  - url: https://veovtygcolfsrjocrhsf.supabase.co/functions/v1
+paths:
+  /pilotage-ai-ingest:
+    post:
+      operationId: reportPilotageEvent
+      summary: Remonter une action réalisée par l'IA vers SpeedArti Pilotage
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - agent_client_key
+                - event_id
+                - event_type
+                - summary
+                - happened_at
+              properties:
+                agent_client_key:
+                  type: string
+                event_id:
+                  type: string
+                  description: Identifiant unique stable de l'événement pour éviter les doublons.
+                event_type:
+                  type: string
+                  enum: [work_done, task_created, task_updated, task_completed, project_progress, blocker, next_step, decision, note]
+                summary:
+                  type: string
+                  maxLength: 2000
+                happened_at:
+                  type: string
+                  format: date-time
+                project_client_key:
+                  type: [string, "null"]
+                task_client_key:
+                  type: [string, "null"]
+                metadata:
+                  type: object
+                  additionalProperties: true
+                dry_run:
+                  type: boolean
+                  default: false
+      responses:
+        "201":
+          description: Événement accepté et traité
+        "200":
+          description: Validation à blanc ou doublon déjà traité
+        "400":
+          description: Données invalides
+        "401":
+          description: Jeton invalide
+        "403":
+          description: Agent ou projet non autorisé
+        "404":
+          description: Projet ou tâche introuvable
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
