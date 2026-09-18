@@ -248,7 +248,14 @@ const TAGS = Object.freeze({
   NOTIF_DECISION: 'PILOT-NOTIF-014',
   REPORT_MEMBER_SCOPE: 'PILOT-REPORT-009',
   DOCUMENT_MEMBER_SCOPE: 'PILOT-DRIVE-002',
-  NOTIF_RECIPIENT_SCOPE: 'PILOT-NOTIF-015'
+  NOTIF_RECIPIENT_SCOPE: 'PILOT-NOTIF-015',
+  AI_CHAT_UI: 'PILOT-AI-018',
+  AI_EDGE_REQUEST: 'PILOT-AI-019',
+  AI_TOOL_EXECUTION: 'PILOT-AI-020',
+  AI_HUMAN_GUARD: 'PILOT-AI-021',
+  AI_REPORT_DRAFT: 'PILOT-AI-022',
+  AI_RATE_LIMIT: 'PILOT-AI-023',
+  ASSISTANT_PAGE: 'PILOT-UI-043'
 });
 
 function trace(tag, message, details = {}) {
@@ -292,6 +299,14 @@ let dailyReportDate = currentDateKey();
 let dailyReportPersonFilter = 'all';
 let dailyReportPresetPersonId = null;
 
+// PILOT-AI-018 / PILOT-UI-043 — assistant ChatGPT Pilotage réel.
+let assistantMessages = [];
+let assistantLoading = false;
+let assistantHistoryLoaded = false;
+let assistantHistoryLoading = false;
+let assistantNeedsRefresh = false;
+let assistantStatus = { configured:null, model:'gpt-5.6', error:'' };
+
 state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequests : [];
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
 state.dailyReports = Array.isArray(state.dailyReports) ? state.dailyReports : [];
@@ -301,6 +316,7 @@ const app = document.querySelector('#app');
 
 const navItems = [
   ['today', 'Aujourd’hui', '⌂'],
+  ['assistant', 'ChatGPT', '✦'],
   ['planning', 'Planification', '↔'],
   ['projects', 'Projets', '▦'],
   ['calendar', 'Agenda', '□'],
@@ -1121,6 +1137,215 @@ function renderActivity() {
 }
 
 
+
+// PILOT-AI-018..023 — ChatGPT Pilotage via Edge Function Supabase.
+// Aucune clé OpenAI n'est présente dans le navigateur.
+async function invokePilotageAssistant(body) {
+  const client = window.PILOTAGE_SUPABASE_CLIENT;
+  if (!client?.functions?.invoke) {
+    throw new Error('Connexion Supabase indisponible pour ChatGPT Pilotage.');
+  }
+
+  trace(TAGS.AI_EDGE_REQUEST, 'Appel Edge Function ChatGPT Pilotage', { action:body?.action || 'chat' });
+
+  const { data, error } = await client.functions.invoke('pilotage-chatgpt', { body });
+
+  if (error) {
+    let detail = null;
+    try {
+      if (error.context?.json) detail = await error.context.json();
+    } catch {}
+    const failure = new Error(detail?.error || error.message || 'Erreur du connecteur ChatGPT Pilotage.');
+    failure.code = detail?.code || null;
+    throw failure;
+  }
+
+  if (data?.error) {
+    const failure = new Error(data.error);
+    failure.code = data.code || null;
+    throw failure;
+  }
+
+  return data || {};
+}
+
+function assistantMessageHtml(message) {
+  const role = message?.role === 'user' ? 'user' : message?.role === 'system' ? 'system' : 'assistant';
+  const text = esc(message?.content || '').replace(/\n/g, '<br>');
+  const actionCount = Array.isArray(message?.actions) ? message.actions.length : 0;
+  return `<article class="pilot-ai-message pilot-ai-${role}">
+    <div class="pilot-ai-avatar">${role === 'user' ? esc(state.currentUser.initials || 'MOI') : role === 'system' ? '!' : '✦'}</div>
+    <div class="pilot-ai-bubble">
+      <small>${role === 'user' ? esc(state.currentUser.name || 'Moi') : role === 'system' ? 'Pilotage' : 'ChatGPT Pilotage'}</small>
+      <p>${text}</p>
+      ${actionCount ? `<span class="pilot-ai-action-count">${actionCount} action${actionCount > 1 ? 's' : ''} Pilotage</span>` : ''}
+    </div>
+  </article>`;
+}
+
+async function loadAssistantHistory(force = false) {
+  if (assistantHistoryLoading || (assistantHistoryLoaded && !force)) return;
+  assistantHistoryLoading = true;
+  if (currentPage === 'assistant') render();
+
+  try {
+    const data = await invokePilotageAssistant({ action:'history' });
+    assistantMessages = Array.isArray(data.messages) ? data.messages : [];
+    assistantStatus = {
+      configured: Boolean(data.configured),
+      model: data.model || 'gpt-5.6',
+      error: ''
+    };
+    assistantHistoryLoaded = true;
+    trace(TAGS.AI_CHAT_UI, 'Historique ChatGPT Pilotage chargé', { count:assistantMessages.length });
+  } catch (error) {
+    assistantStatus.error = error.message || 'Historique ChatGPT indisponible.';
+    trace(TAGS.AI_CHAT_UI, 'Erreur chargement historique ChatGPT', { message:assistantStatus.error });
+  } finally {
+    assistantHistoryLoading = false;
+    if (currentPage === 'assistant') render();
+  }
+}
+
+async function sendAssistantMessage(textOverride = null) {
+  if (assistantLoading) return;
+
+  const input = document.querySelector('#assistantInput');
+  const message = String(textOverride ?? input?.value ?? '').trim();
+  if (!message) {
+    input?.focus();
+    return;
+  }
+
+  const history = assistantMessages
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .slice(-10)
+    .map(m => ({ role:m.role, content:m.content }));
+
+  assistantMessages.push({ role:'user', content:message, at:new Date().toISOString() });
+  assistantLoading = true;
+  assistantStatus.error = '';
+  render();
+
+  try {
+    const data = await invokePilotageAssistant({
+      action:'chat',
+      message,
+      history
+    });
+
+    assistantStatus.configured = data.configured !== false;
+    assistantStatus.model = data.model || assistantStatus.model || 'gpt-5.6';
+    assistantMessages.push({
+      role:'assistant',
+      content:data.reply || 'Demande traitée.',
+      actions:Array.isArray(data.actions) ? data.actions : [],
+      at:new Date().toISOString()
+    });
+
+    if (Array.isArray(data.actions) && data.actions.some(action => action?.ok)) {
+      assistantNeedsRefresh = true;
+    }
+
+    assistantHistoryLoaded = true;
+    trace(TAGS.AI_TOOL_EXECUTION, 'Réponse ChatGPT Pilotage reçue', {
+      requestId:data.requestId || null,
+      actions:Array.isArray(data.actions) ? data.actions.length : 0
+    });
+  } catch (error) {
+    if (error.code === 'openai_not_configured') assistantStatus.configured = false;
+    assistantStatus.error = error.message || 'ChatGPT Pilotage est momentanément indisponible.';
+    assistantMessages.push({
+      role:'system',
+      content:assistantStatus.error,
+      at:new Date().toISOString()
+    });
+  } finally {
+    assistantLoading = false;
+    render();
+    requestAnimationFrame(() => {
+      document.querySelector('#assistantInput')?.focus();
+      document.querySelector('.pilot-ai-thread')?.scrollTo?.({ top:999999, behavior:'smooth' });
+    });
+  }
+}
+
+function renderAssistant() {
+  const configured = assistantStatus.configured;
+  const statusClass = assistantStatus.error ? 'error' : configured === false ? 'warning' : configured === true ? 'ok' : 'neutral';
+  const statusText = assistantStatus.error
+    ? assistantStatus.error
+    : configured === false
+      ? 'Connecteur installé. Il reste à ajouter la clé API OpenAI dans les secrets Supabase.'
+      : configured === true
+        ? `Connecté · ${assistantStatus.model || 'OpenAI'} · contexte Pilotage sécurisé par RLS`
+        : 'Vérification du connecteur ChatGPT Pilotage…';
+
+  const quickPrompts = [
+    'Quels sont les blocages actuels et les prochaines actions ?',
+    'Résume-moi la situation des projets auxquels j’ai accès.',
+    'Quelles sont mes priorités aujourd’hui ?',
+    'Prépare un brouillon de mon compte rendu du jour avec les données disponibles.'
+  ];
+
+  return `
+    <style>
+      .pilot-ai-shell{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:16px;align-items:start}
+      .pilot-ai-card{border:1px solid var(--border);border-radius:14px;background:#fff;overflow:hidden;box-shadow:0 4px 18px rgba(15,23,42,.04)}
+      .pilot-ai-status{display:flex;gap:9px;align-items:center;margin:0 0 14px;padding:11px 13px;border-radius:10px;font-size:11px;font-weight:700}
+      .pilot-ai-status.ok{background:#ecfdf5;color:#166534;border:1px solid #bbf7d0}.pilot-ai-status.warning{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa}.pilot-ai-status.error{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}.pilot-ai-status.neutral{background:#f8fafc;color:#475569;border:1px solid #e2e8f0}
+      .pilot-ai-thread{min-height:390px;max-height:58vh;overflow:auto;padding:18px;background:linear-gradient(180deg,#f8fbff,#fff)}
+      .pilot-ai-empty{min-height:350px;display:grid;place-items:center;text-align:center;color:var(--muted);padding:30px}.pilot-ai-empty span{display:grid;place-items:center;margin:0 auto 12px;width:54px;height:54px;border-radius:15px;background:#eff6ff;color:#2563eb;font-size:26px}.pilot-ai-empty strong{display:block;color:#17345f;font-size:15px}.pilot-ai-empty p{max-width:450px;line-height:1.55}
+      .pilot-ai-message{display:flex;gap:9px;margin:0 0 13px;align-items:flex-start}.pilot-ai-message.pilot-ai-user{flex-direction:row-reverse}.pilot-ai-avatar{width:30px;height:30px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;background:#e0ecff;color:#1d4ed8;font-size:11px;font-weight:900}.pilot-ai-user .pilot-ai-avatar{background:#dbeafe}.pilot-ai-system .pilot-ai-avatar{background:#fee2e2;color:#b91c1c}
+      .pilot-ai-bubble{max-width:min(76%,720px);padding:10px 12px;border:1px solid #dbeafe;border-radius:11px;background:#fff}.pilot-ai-user .pilot-ai-bubble{background:#2563eb;color:#fff;border-color:#2563eb}.pilot-ai-system .pilot-ai-bubble{background:#fff7ed;border-color:#fed7aa}.pilot-ai-bubble small{display:block;margin-bottom:4px;font-size:9px;font-weight:900;opacity:.7;letter-spacing:.04em;text-transform:uppercase}.pilot-ai-bubble p{margin:0;font-size:12px;line-height:1.55}.pilot-ai-action-count{display:inline-flex;margin-top:7px;padding:3px 7px;border-radius:999px;background:#ecfdf5;color:#15803d;font-size:9px;font-weight:800}
+      .pilot-ai-compose{padding:13px;border-top:1px solid var(--border);background:#fff}.pilot-ai-compose textarea{width:100%;min-height:76px;max-height:180px;resize:vertical;border:1px solid #cbd5e1;border-radius:10px;padding:11px 12px;font:inherit;line-height:1.45}.pilot-ai-compose textarea:focus{outline:none;border-color:#60a5fa;box-shadow:0 0 0 3px rgba(37,99,235,.08)}.pilot-ai-compose footer{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:9px}.pilot-ai-compose footer small{color:var(--muted);font-size:10px}
+      .pilot-ai-side{display:grid;gap:12px}.pilot-ai-side-card{border:1px solid var(--border);border-radius:12px;background:#fff;padding:14px}.pilot-ai-side-card h3{margin:0 0 9px;font-size:12px}.pilot-ai-prompts{display:grid;gap:7px}.pilot-ai-prompts button{border:1px solid #dbeafe;background:#f8fbff;border-radius:9px;padding:9px 10px;text-align:left;color:#1e3a5f;font-size:10px;line-height:1.4}.pilot-ai-prompts button:hover{background:#eff6ff;border-color:#93c5fd}.pilot-ai-rules{margin:0;padding-left:17px;color:#475569;font-size:10px;line-height:1.55}.pilot-ai-refresh{width:100%;margin-top:9px}
+      .pilot-ai-config{margin-top:8px;font-size:10px;line-height:1.45;color:#7c2d12}
+      @media(max-width:900px){.pilot-ai-shell{grid-template-columns:1fr}.pilot-ai-side{grid-template-columns:1fr 1fr}.pilot-ai-thread{max-height:50vh}.pilot-ai-bubble{max-width:86%}}
+      @media(max-width:620px){.pilot-ai-side{grid-template-columns:1fr}.pilot-ai-thread{padding:12px;min-height:330px}.pilot-ai-bubble{max-width:90%}.pilot-ai-compose footer{align-items:stretch;flex-direction:column}.pilot-ai-compose .primary-btn{width:100%}}
+    </style>
+    ${pageHeader('ChatGPT Pilotage', 'Assistant opérationnel relié aux données réelles de Pilotage')}
+    <div class="pilot-ai-status ${statusClass}"><span>✦</span><span>${esc(statusText)}</span></div>
+    <div class="pilot-ai-shell">
+      <section class="pilot-ai-card">
+        <div class="pilot-ai-thread">
+          ${assistantHistoryLoading && !assistantMessages.length
+            ? '<div class="pilot-ai-empty"><div><span>✦</span><strong>Chargement de l’historique…</strong></div></div>'
+            : assistantMessages.length
+              ? assistantMessages.map(assistantMessageHtml).join('')
+              : '<div class="pilot-ai-empty"><div><span>✦</span><strong>ChatGPT Pilotage est prêt.</strong><p>Il peut analyser tes projets et tâches, créer ou modifier des tâches, mettre à jour les projets et préparer un brouillon de compte rendu.</p></div></div>'}
+          ${assistantLoading ? '<article class="pilot-ai-message pilot-ai-assistant"><div class="pilot-ai-avatar">✦</div><div class="pilot-ai-bubble"><small>ChatGPT Pilotage</small><p>Analyse en cours…</p></div></article>' : ''}
+        </div>
+        <div class="pilot-ai-compose">
+          <textarea id="assistantInput" maxlength="6000" placeholder="Ex. Crée une tâche urgente pour Guillaume sur le projet test v14…"></textarea>
+          <footer>
+            <small>Entrée pour envoyer · Maj+Entrée pour une nouvelle ligne</small>
+            <button class="primary-btn" id="assistantSend" ${assistantLoading ? 'disabled' : ''}>${assistantLoading ? 'En cours…' : 'Envoyer'}</button>
+          </footer>
+        </div>
+      </section>
+      <aside class="pilot-ai-side">
+        <section class="pilot-ai-side-card">
+          <h3>Demandes rapides</h3>
+          <div class="pilot-ai-prompts">${quickPrompts.map(prompt => `<button data-assistant-prompt="${esc(prompt)}">${esc(prompt)}</button>`).join('')}</div>
+        </section>
+        <section class="pilot-ai-side-card">
+          <h3>Garde-fous actifs</h3>
+          <ul class="pilot-ai-rules">
+            <li>Droits Supabase de l’utilisateur connecté.</li>
+            <li>Aucune donnée critique inventée.</li>
+            <li>Clôture projet soumise à validation humaine.</li>
+            <li>Compte rendu IA créé uniquement en brouillon.</li>
+            <li>Historique des demandes dans <code>ai_requests</code>.</li>
+          </ul>
+          ${assistantNeedsRefresh ? '<button class="secondary-btn pilot-ai-refresh" id="assistantRefreshData">↻ Actualiser les données Pilotage</button>' : ''}
+          <button class="secondary-btn pilot-ai-refresh" id="assistantReloadHistory">Recharger l’historique</button>
+          ${configured === false ? '<p class="pilot-ai-config">La clé OpenAI reste exclusivement dans les secrets de l’Edge Function Supabase, jamais dans GitHub ni dans le navigateur.</p>' : ''}
+        </section>
+      </aside>
+    </div>`;
+}
+
 function reportSourceLabel(report) {
   if (report.source === 'manual') return 'Ajout manuel';
   return aiAgentLabel(report.sourceAgent);
@@ -1291,7 +1516,7 @@ function validateDailyReport(reportId) {
 }
 
 function renderMore() {
-  return pageHeader('Plus', 'Outils complémentaires') + `<div class="menu-list"><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
+  return pageHeader('Plus', 'Outils complémentaires') + `<div class="menu-list"><button data-page="assistant">ChatGPT Pilotage <span>✦</span></button><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
 }
 
 function renderQuickActionModal() {
@@ -1304,6 +1529,7 @@ function renderQuickActionModal() {
       <button data-quick-action="project"><span>▦</span><div><strong>Nouveau projet</strong><small>Créer un projet complet</small></div></button>
       <button data-quick-action="document"><span>▤</span><div><strong>Lier un document</strong><small>Référence Google Drive</small></div></button>
       <button data-quick-action="report"><span>☷</span><div><strong>Compte rendu manuel</strong><small>Ajouter le mini bilan du jour</small></div></button>
+      <button data-quick-action="assistant"><span>✦</span><div><strong>ChatGPT Pilotage</strong><small>Analyser, créer ou mettre à jour</small></div></button>
       <button data-quick-action="planning" ${unplanned ? '' : 'disabled'}><span>↔</span><div><strong>Planifier le prochain élément</strong><small>${unplanned ? esc(unplanned.title) : 'Rien à planifier'}</small></div></button>
       <button data-quick-action="approval" ${approval ? '' : 'disabled'}><span>!</span><div><strong>Traiter une validation</strong><small>${approval ? esc(project(approval.projectId)?.name || 'Projet') : 'Aucune validation'}</small></div></button>
       <button data-quick-action="notifications"><span>♢</span><div><strong>Centre de notifications</strong><small>${unreadNotifications()} non lue${unreadNotifications() > 1 ? 's' : ''}</small></div></button>
@@ -1482,12 +1708,14 @@ function renderArchiveModal(projectId) {
 function renderDeferModal(taskId) {
   const t = task(taskId);
   if (!t) return '';
+  const tomorrowLabel = dateFromKey(addDaysKey(1)).toLocaleDateString('fr-FR', { day:'numeric', month:'long' });
+  const nextWeekLabel = dateFromKey(nextWeekMondayKey()).toLocaleDateString('fr-FR', { day:'numeric', month:'long' });
   return `<div class="modal-backdrop" id="deferBackdrop"></div><div class="modal-card defer-modal" role="dialog" aria-modal="true">
     <header><div><small>REPORTER</small><h2>${esc(t.title)}</h2></div><button class="icon-btn" id="closeDefer">×</button></header>
     <p class="form-note">Choisis quand tu veux revoir cette tâche. L’action est enregistrée dans l’historique.</p>
     <div class="defer-options">
-      <button data-defer-choice="tomorrow"><strong>Demain</strong><small>18 septembre</small></button>
-      <button data-defer-choice="next_week"><strong>Semaine prochaine</strong><small>21 septembre</small></button>
+      <button data-defer-choice="tomorrow"><strong>Demain</strong><small>${esc(tomorrowLabel)}</small></button>
+      <button data-defer-choice="next_week"><strong>Semaine prochaine</strong><small>${esc(nextWeekLabel)}</small></button>
       <button data-defer-choice="this_month"><strong>Plus tard ce mois</strong><small>Roadmap · Ce mois</small></button>
       <button data-defer-choice="backlog"><strong>À organiser</strong><small>Retirer le jour prévu</small></button>
     </div>
@@ -1516,6 +1744,7 @@ function render() {
   refreshSmartNotifications();
   let content;
   switch (currentPage) {
+    case 'assistant': content = renderAssistant(); break;
     case 'planning': content = renderPlanning(); break;
     case 'projects': content = renderProjects(); break;
     case 'calendar': content = renderCalendar(); break;
@@ -1534,6 +1763,7 @@ function navigate(page) {
   selectedProjectId = null;
   trace(TAGS.NAVIGATE, 'Navigation', { page });
   render();
+  if (page === 'assistant') setTimeout(() => loadAssistantHistory(), 0);
 }
 
 function openPlanning(taskId) {
@@ -2020,6 +2250,7 @@ function runQuickAction(action) {
   if (action === 'project') return openProjectModal();
   if (action === 'document') return openDocumentModal();
   if (action === 'report') return openDailyReportModal();
+  if (action === 'assistant') return navigate('assistant');
   if (action === 'planning' && unplanned) return openPlanning(unplanned.id);
   if (action === 'approval' && approval) return openApproval(approval.id);
   if (action === 'notifications') { notificationOpen=true; return render(); }
@@ -2110,6 +2341,27 @@ function openTeamWorkload() { teamWorkloadOpen=true; trace(TAGS.TEAM_WORKLOAD, '
 function closeTeamWorkload() { teamWorkloadOpen=false; render(); }
 
 function bindEvents() {
+  document.querySelector('#assistantSend')?.addEventListener('click', () => sendAssistantMessage());
+  document.querySelector('#assistantInput')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendAssistantMessage();
+    }
+  });
+  document.querySelectorAll('[data-assistant-prompt]').forEach(el => el.addEventListener('click', () => {
+    const input = document.querySelector('#assistantInput');
+    if (input) {
+      input.value = el.dataset.assistantPrompt || '';
+      input.focus();
+    }
+  }));
+  document.querySelector('#assistantReloadHistory')?.addEventListener('click', () => loadAssistantHistory(true));
+  document.querySelector('#assistantRefreshData')?.addEventListener('click', async () => {
+    assistantNeedsRefresh = false;
+    trace(TAGS.AI_TOOL_EXECUTION, 'Actualisation Pilotage après action ChatGPT');
+    if (window.PILOTAGE_REMOTE?.refreshFromSupabase) await window.PILOTAGE_REMOTE.refreshFromSupabase();
+  });
+
   document.querySelector('#refreshRemoteBtn')?.addEventListener('click', async e => {
     const button = e.currentTarget;
     button.disabled = true;
