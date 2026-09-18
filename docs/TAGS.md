@@ -90,3 +90,30 @@ Toutes les balises V1 à V11 déjà présentes restent réservées à leur fonct
 - Un membre rattache un document à un projet accessible.
 - Le bouton ↻ récupère immédiatement les changements faits par un autre utilisateur.
 - Supabase reste la source de vérité et les protections V13 restent actives.
+
+
+## V15 — ChatGPT Pilotage
+
+| Balise | Fonction | Zone | Statut |
+|---|---|---|---|
+| `PILOT-AI-018` | Interface conversationnelle ChatGPT Pilotage | `src/app.js` | Actif V15 |
+| `PILOT-AI-019` | Requête authentifiée vers l’Edge Function `pilotage-chatgpt` | Frontend + Supabase Edge | Actif V15 |
+| `PILOT-AI-020` | Exécution structurée des outils IA et journalisation | Supabase Edge + tables métier | Actif V15 |
+| `PILOT-AI-021` | Garde humaine obligatoire pour la clôture projet | Edge Function + `change_requests` | Actif V15 |
+| `PILOT-AI-022` | Création d’un compte rendu IA uniquement en brouillon | Edge Function + `daily_reports` | Actif V15 |
+| `PILOT-AI-023` | Limite de fréquence par agent IA | Edge Function + `ai_requests` | Actif V15 |
+| `PILOT-UI-043` | Page ChatGPT intégrée à la navigation Pilotage | `src/app.js` | Actif V15 |
+
+### Architecture V15
+
+- Le navigateur n’appelle jamais OpenAI directement.
+- Le frontend appelle l’Edge Function Supabase authentifiée `pilotage-chatgpt`.
+- La fonction utilise le JWT Supabase du membre connecté : les lectures et écritures restent soumises aux RLS.
+- La clé `OPENAI_API_KEY` doit exister uniquement dans les secrets de l’Edge Function Supabase.
+- Le modèle par défaut est `gpt-5.6` et peut être remplacé côté serveur par le secret `OPENAI_MODEL`.
+- ChatGPT reçoit uniquement le contexte Pilotage accessible à l’utilisateur : projets, tâches, équipe, activité, validations et comptes rendus.
+- Les outils disponibles sont : création/modification de tâche, mise à jour non critique d’un projet, demande de clôture et brouillon de compte rendu.
+- ChatGPT ne peut pas modifier les rôles, les accès, les participants projet ni valider définitivement une clôture ou un compte rendu.
+- Chaque requête est enregistrée dans `ai_requests`; les actions métier alimentent également l’activité.
+- La limite serveur est de 12 requêtes par minute et par agent.
+- `store:false` est utilisé pour les appels OpenAI de ce lot.
