@@ -25,10 +25,15 @@
   let pendingState = null;
   let syncTimer = null;
   let syncing = false;
-  let suppressStorageHook = false;
-  let storageHookInstalled = false;
+  let stateWatcherTimer = null;
+  let lastObservedRaw = '';
+  let retryTimer = null;
   let lastError = null;
   let lastSyncedAt = null;
+
+  const STATE_WATCH_INTERVAL_MS = 600;
+  const SYNC_RETRY_MS = 8000;
+  const REMOTE_LOAD_TIMEOUT_MS = 10000;
 
   const maps = {
     membersByClient: new Map(),
@@ -56,6 +61,14 @@
   function safeParse(raw, fallback = {}) {
     try { return raw ? JSON.parse(raw) : fallback; }
     catch { return fallback; }
+  }
+
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} a dépassé ${Math.round(ms / 1000)} s.`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   function array(value) {
@@ -427,12 +440,9 @@
   }
 
   function writeLocalState(state) {
-    suppressStorageHook = true;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } finally {
-      suppressStorageHook = false;
-    }
+    const raw = JSON.stringify(state);
+    localStorage.setItem(STORAGE_KEY, raw);
+    lastObservedRaw = raw;
   }
 
   function pendingKey() {
@@ -440,21 +450,11 @@
   }
 
   function storePending(state) {
-    suppressStorageHook = true;
-    try {
-      localStorage.setItem(pendingKey(), JSON.stringify(state));
-    } finally {
-      suppressStorageHook = false;
-    }
+    localStorage.setItem(pendingKey(), JSON.stringify(state));
   }
 
   function clearPending() {
-    suppressStorageHook = true;
-    try {
-      localStorage.removeItem(pendingKey());
-    } finally {
-      suppressStorageHook = false;
-    }
+    localStorage.removeItem(pendingKey());
   }
 
   async function upsertReturning(table, rows, conflict = 'client_key') {
@@ -623,7 +623,10 @@
         created_at: a.at || new Date().toISOString()
       };
     });
-    await upsertReturning('activity_log', rows);
+    const { error } = await client
+      .from('activity_log')
+      .upsert(rows, { onConflict: 'client_key', ignoreDuplicates: true });
+    if (error) throw new Error(`activity_log: ${error.message}`);
     trace(TAGS.ACTIVITY_SYNC, 'Activité synchronisée', { count: items.length });
   }
 
@@ -746,22 +749,34 @@
   }
 
   async function flushLoop() {
-    if (syncing) return;
+    if (syncing || !pendingState) return;
     syncing = true;
 
     try {
       while (pendingState) {
         const target = pendingState;
         pendingState = null;
+
         await syncDiff(baselineState || {}, target);
+
         baselineState = clone(target);
         clearPending();
+        lastError = null;
       }
     } catch (error) {
       console.error(`[${TAGS.DIFF_SYNC}]`, error);
       lastError = error.message || String(error);
-      if (!pendingState) pendingState = safeParse(localStorage.getItem(pendingKey()), null);
-      setTimeout(flushLoop, 3000);
+
+      // On conserve la dernière version locale et on réessaie plus tard,
+      // sans bloquer l'interface ni le prochain rechargement.
+      if (!pendingState) {
+        pendingState = safeParse(localStorage.getItem(pendingKey()), null);
+      }
+
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        if (pendingState) flushLoop();
+      }, SYNC_RETRY_MS);
     } finally {
       syncing = false;
     }
@@ -771,42 +786,41 @@
     pendingState = clone(state);
     storePending(state);
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(flushLoop, 220);
+    syncTimer = setTimeout(flushLoop, 250);
   }
 
-  function installStorageHook() {
-    if (storageHookInstalled) return;
-    storageHookInstalled = true;
+  function installStateWatcher() {
+    if (stateWatcherTimer) clearInterval(stateWatcherTimer);
 
-    const nativeSetItem = Storage.prototype.setItem;
-    Storage.prototype.setItem = function(key, value) {
-      nativeSetItem.call(this, key, value);
-      if (
-        !suppressStorageHook &&
-        this === window.localStorage &&
-        key === STORAGE_KEY &&
-        auth?.userId
-      ) {
-        const nextState = safeParse(value, null);
-        if (nextState) scheduleSync(nextState);
-      }
-    };
+    lastObservedRaw = localStorage.getItem(STORAGE_KEY) || '';
+
+    // V12.2 : on n'écrase plus Storage.prototype.setItem.
+    // On observe le cache local à intervalle court et on ne synchronise
+    // que lorsqu'il a réellement changé.
+    stateWatcherTimer = setInterval(() => {
+      const raw = localStorage.getItem(STORAGE_KEY) || '';
+      if (!raw || raw === lastObservedRaw) return;
+
+      lastObservedRaw = raw;
+      const nextState = safeParse(raw, null);
+      if (nextState) scheduleSync(nextState);
+    }, STATE_WATCH_INTERVAL_MS);
   }
 
-  async function recoverPendingIfNeeded(remoteState) {
+  function restorePendingWithoutBlocking(remoteState) {
     const raw = localStorage.getItem(pendingKey());
     if (!raw) return remoteState;
 
     const pending = safeParse(raw, null);
-    if (!pending) {
+    if (!pending || !Array.isArray(pending.projects) || !Array.isArray(pending.tasks)) {
       clearPending();
       return remoteState;
     }
 
-    trace(TAGS.RECOVERY, 'Reprise d’une synchronisation interrompue');
-    await syncDiff(remoteState, pending);
-    clearPending();
-    return loadRemoteState();
+    trace(TAGS.RECOVERY, 'Synchronisation interrompue retrouvée — reprise en arrière-plan');
+
+    pendingState = clone(pending);
+    return pending;
   }
 
   async function prepareSession({ supabaseClient, userId, profile, member }) {
@@ -814,12 +828,48 @@
     auth = { userId, profile };
     currentMember = member;
 
-    let remoteState = await loadRemoteState();
-    remoteState = await recoverPendingIfNeeded(remoteState);
+    let remoteState;
+
+    try {
+      remoteState = await withTimeout(
+        loadRemoteState(),
+        REMOTE_LOAD_TIMEOUT_MS,
+        'Chargement Supabase'
+      );
+    } catch (error) {
+      // Mode de secours : l'application reste accessible avec le dernier cache local.
+      // On ne laisse plus l'utilisateur bloqué sur l'écran de chargement.
+      console.error(`[${TAGS.HYDRATE}]`, error);
+      lastError = error.message || String(error);
+
+      const cached = safeParse(localStorage.getItem(STORAGE_KEY), null);
+      if (!cached || !Array.isArray(cached.projects) || !Array.isArray(cached.tasks)) {
+        throw error;
+      }
+
+      baselineState = clone(cached);
+      writeLocalState(cached);
+      installStateWatcher();
+
+      trace(TAGS.HYDRATE, 'Mode cache local temporaire activé', {
+        reason: lastError
+      });
+
+      return cached;
+    }
 
     baselineState = clone(remoteState);
-    writeLocalState(remoteState);
-    installStorageHook();
+
+    // Une ancienne synchro inachevée ne bloque plus le démarrage :
+    // on réaffiche son état immédiatement et on la rejoue ensuite en arrière-plan.
+    const bootState = restorePendingWithoutBlocking(remoteState);
+
+    writeLocalState(bootState);
+    installStateWatcher();
+
+    if (pendingState) {
+      setTimeout(flushLoop, 100);
+    }
 
     window.PILOTAGE_REMOTE_STATUS = {
       mode: 'supabase',
@@ -828,25 +878,47 @@
     };
 
     trace(TAGS.HYDRATE, 'Pilotage hydraté depuis Supabase', {
-      projects: remoteState.projects.length,
-      tasks: remoteState.tasks.length,
-      reports: remoteState.dailyReports.length
+      projects: bootState.projects.length,
+      tasks: bootState.tasks.length,
+      reports: array(bootState.dailyReports).length,
+      recoveryPending: Boolean(pendingState)
     });
 
-    return remoteState;
+    return bootState;
   }
 
   async function refreshFromSupabase() {
     if (!client || !auth) return;
-    if (syncing || pendingState) await flushLoop();
-    const remoteState = await loadRemoteState();
-    baselineState = clone(remoteState);
-    writeLocalState(remoteState);
-    window.location.reload();
+
+    if (pendingState) {
+      await withTimeout(flushLoop(), 6000, 'Synchronisation en cours').catch(error => {
+        lastError = error.message || String(error);
+      });
+    }
+
+    // Ne jamais écraser un changement local encore non synchronisé.
+    if (pendingState) return;
+
+    try {
+      const remoteState = await withTimeout(
+        loadRemoteState(),
+        REMOTE_LOAD_TIMEOUT_MS,
+        'Actualisation Supabase'
+      );
+      baselineState = clone(remoteState);
+      writeLocalState(remoteState);
+      window.location.reload();
+    } catch (error) {
+      lastError = error.message || String(error);
+      console.error(`[${TAGS.HYDRATE}]`, error);
+    }
   }
 
   async function flush() {
-    await flushLoop();
+    if (!pendingState) return;
+    await withTimeout(flushLoop(), 5000, 'Synchronisation finale').catch(error => {
+      lastError = error.message || String(error);
+    });
   }
 
   window.PILOTAGE_REMOTE = Object.freeze({
@@ -858,7 +930,8 @@
       lastSyncedAt,
       lastError,
       syncing,
-      hasPending: Boolean(pendingState || (auth?.userId && localStorage.getItem(pendingKey())))
+      hasPending: Boolean(pendingState || (auth?.userId && localStorage.getItem(pendingKey()))),
+      transport: 'polling-safe-v12.2'
     })
   });
 })();
