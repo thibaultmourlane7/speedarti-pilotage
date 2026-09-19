@@ -1,206 +1,384 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const cors = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type, x-client-info",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+const JSON_HEADERS = {
   "Content-Type": "application/json; charset=utf-8",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, content-type, mcp-protocol-version, mcp-method, mcp-name",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
 };
 
-const allowedEvents = new Set([
-  "work_done","task_created","task_updated","task_completed",
-  "project_progress","blocker","next_step","decision","note",
-]);
+const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.1" };
+const SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25"];
 
-function reply(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: cors });
+function response(body: unknown, status = 200, extra: Record<string,string> = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...JSON_HEADERS, ...extra }
+  });
 }
-function clean(value: unknown, max = 2000) {
-  return String(value ?? "").trim().slice(0, max);
+
+function rpcResult(id: unknown, result: Record<string,unknown>) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      ...result,
+      _meta: {
+        ...((result as any)?._meta || {}),
+        "io.modelcontextprotocol/serverInfo": SERVER_INFO
+      }
+    }
+  };
 }
-function parisDateKey(value: string | Date) {
-  const d = value instanceof Date ? value : new Date(value);
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit",
-  }).formatToParts(d);
-  const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
-  return map.year + "-" + map.month + "-" + map.day;
+
+function rpcError(id: unknown, code: number, message: string, data?: unknown) {
+  return {
+    jsonrpc: "2.0",
+    id: id ?? null,
+    error: { code, message, ...(data ? { data } : {}) }
+  };
 }
+
 async function sha256Hex(value: string) {
-  const data = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
-function sourceType(provider: string, name: string) {
-  const value = (provider + " " + name).toLowerCase();
-  if (value.includes("anthropic") || value.includes("claude")) return "claude";
-  if (value.includes("openai") || value.includes("chatgpt")) return "chatgpt";
-  return "other_ai";
+
+function authToken(req: Request) {
+  const url = new URL(req.url);
+  const queryKey = (url.searchParams.get("key") || "").trim();
+  if (queryKey) return queryKey;
+  const auth = req.headers.get("Authorization") || "";
+  return auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
 }
-function appendUnique(items: unknown, value: string) {
-  const list = Array.isArray(items) ? items.map(x => clean(x, 600)).filter(Boolean) : [];
-  if (!list.includes(value)) list.push(value);
-  return list.slice(-50);
+
+async function resolveAgent(db: any, token: string) {
+  const hash = await sha256Hex(token);
+  const { data: tokenRow, error: tokenError } = await db
+    .from("ai_agent_tokens")
+    .select("agent_id,active")
+    .eq("token_hash", hash)
+    .maybeSingle();
+
+  if (tokenError || !tokenRow || tokenRow.active !== true) return null;
+
+  const { data: agent, error: agentError } = await db
+    .from("ai_agents")
+    .select("id,client_key,name,provider,member_id,active")
+    .eq("id", tokenRow.agent_id)
+    .maybeSingle();
+
+  if (agentError || !agent || agent.active !== true) return null;
+
+  const { data: member, error: memberError } = await db
+    .from("team_members")
+    .select("id,client_key,display_name,role,active")
+    .eq("id", agent.member_id)
+    .maybeSingle();
+
+  if (memberError || !member || member.active !== true) return null;
+  return { tokenRow, agent, member };
+}
+
+function toolsCatalog() {
+  return [
+    {
+      name: "listPilotageContext",
+      title: "Lister le contexte SpeedArti Pilotage",
+      description: "Retourne les projets et tâches accessibles au membre lié à cette IA. À utiliser avant d'associer une remontée à un projet ou une tâche afin de ne jamais inventer d'identifiant.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          include_completed: {
+            type: "boolean",
+            description: "Inclure les tâches déjà terminées. Par défaut false."
+          }
+        }
+      }
+    },
+    {
+      name: "reportPilotageEvent",
+      title: "Remonter une activité vers SpeedArti Pilotage",
+      description: "Enregistre un travail réellement effectué, une tâche terminée, un blocage, une prochaine étape, une décision ou une note utile. Ne jamais inventer project_client_key ou task_client_key.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["event_type", "summary"],
+        properties: {
+          event_id: {
+            type: "string",
+            description: "Identifiant unique stable de l'événement. Facultatif : le serveur en génère un si absent."
+          },
+          event_type: {
+            type: "string",
+            enum: ["work_done","task_created","task_updated","task_completed","project_progress","blocker","next_step","decision","note"]
+          },
+          summary: { type: "string", minLength: 1, maxLength: 2000 },
+          happened_at: {
+            type: "string",
+            description: "Horodatage ISO 8601. Facultatif, maintenant si absent."
+          },
+          project_client_key: { type: ["string","null"] },
+          task_client_key: { type: ["string","null"] },
+          metadata: { type: "object", additionalProperties: true },
+          dry_run: {
+            type: "boolean",
+            description: "Valide sans enregistrer. Utile pour le premier test."
+          }
+        }
+      }
+    }
+  ];
+}
+
+async function listContext(db: any, auth: any, args: any) {
+  const includeCompleted = args?.include_completed === true;
+  let projectIds: string[] = [];
+
+  if (auth.member.role === "admin") {
+    const { data } = await db
+      .from("projects")
+      .select("id,client_key,name,status,priority,progress,blocker,next_action")
+      .is("archived_at", null)
+      .order("updated_at", { ascending: false });
+    const projects = data || [];
+    projectIds = projects.map((p: any) => p.id);
+
+    let taskQuery = db
+      .from("tasks")
+      .select("client_key,title,status,priority,project_id,assigned_to_member_id,planning_bucket,due_at")
+      .in("project_id", projectIds.length ? projectIds : ["00000000-0000-0000-0000-000000000000"])
+      .order("updated_at", { ascending: false })
+      .limit(100);
+
+    if (!includeCompleted) taskQuery = taskQuery.neq("status", "completed");
+    const { data: tasks } = await taskQuery;
+    const byProject = Object.fromEntries(projects.map((p: any) => [p.id, p]));
+
+    return {
+      member: auth.member.client_key,
+      projects: projects.map((p: any) => ({
+        client_key: p.client_key,
+        name: p.name,
+        status: p.status,
+        priority: p.priority,
+        progress: p.progress,
+        blocker: p.blocker,
+        next_action: p.next_action
+      })),
+      tasks: (tasks || []).map((t: any) => ({
+        client_key: t.client_key,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        planning_bucket: t.planning_bucket,
+        due_at: t.due_at,
+        project_client_key: byProject[t.project_id]?.client_key || null,
+        project_name: byProject[t.project_id]?.name || null
+      }))
+    };
+  }
+
+  const { data: memberships } = await db
+    .from("project_members")
+    .select("project_id")
+    .eq("member_id", auth.member.id);
+
+  projectIds = (memberships || []).map((x: any) => x.project_id);
+
+  const { data: projects } = projectIds.length
+    ? await db
+        .from("projects")
+        .select("id,client_key,name,status,priority,progress,blocker,next_action")
+        .in("id", projectIds)
+        .is("archived_at", null)
+        .order("updated_at", { ascending: false })
+    : { data: [] };
+
+  let tasks: any[] = [];
+  if (projectIds.length) {
+    let q = db
+      .from("tasks")
+      .select("client_key,title,status,priority,project_id,assigned_to_member_id,planning_bucket,due_at")
+      .in("project_id", projectIds)
+      .order("updated_at", { ascending: false })
+      .limit(100);
+    if (!includeCompleted) q = q.neq("status", "completed");
+    const result = await q;
+    tasks = result.data || [];
+  }
+
+  const byProject = Object.fromEntries((projects || []).map((p: any) => [p.id, p]));
+  return {
+    member: auth.member.client_key,
+    projects: (projects || []).map((p: any) => ({
+      client_key: p.client_key,
+      name: p.name,
+      status: p.status,
+      priority: p.priority,
+      progress: p.progress,
+      blocker: p.blocker,
+      next_action: p.next_action
+    })),
+    tasks: tasks.map((t: any) => ({
+      client_key: t.client_key,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      planning_bucket: t.planning_bucket,
+      due_at: t.due_at,
+      project_client_key: byProject[t.project_id]?.client_key || null,
+      project_name: byProject[t.project_id]?.name || null
+    }))
+  };
+}
+
+async function callIngest(auth: any, token: string, args: any) {
+  const base = Deno.env.get("SUPABASE_URL") || "";
+  const eventId = String(args?.event_id || ("mcp-" + crypto.randomUUID()));
+  const body = {
+    agent_client_key: auth.agent.client_key,
+    event_id: eventId,
+    event_type: args?.event_type,
+    summary: args?.summary,
+    happened_at: args?.happened_at || new Date().toISOString(),
+    project_client_key: args?.project_client_key || null,
+    task_client_key: args?.task_client_key || null,
+    metadata: {
+      ...(args?.metadata || {}),
+      source_bridge: "pilotage-mcp",
+      mcp_server_version: "16.1"
+    },
+    dry_run: args?.dry_run === true
+  };
+
+  const res = await fetch(base + "/functions/v1/pilotage-ai-ingest", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({ error: "Réponse non JSON de pilotage-ai-ingest." }));
+  return { ok: res.ok, status: res.status, data };
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
-  if (req.method !== "POST") return reply({ error: "Méthode non autorisée." }, 405);
+  if (req.method === "OPTIONS") return new Response("ok", { headers: JSON_HEADERS });
 
-  const auth = req.headers.get("Authorization") || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return reply({ error: "Jeton agent requis." }, 401);
+  const token = authToken(req);
+  if (!token) return response(rpcError(null, -32001, "Authentification requise."), 401);
 
   const url = Deno.env.get("SUPABASE_URL") || "";
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-  if (!url || !serviceKey) return reply({ error: "Configuration serveur indisponible." }, 500);
+  if (!url || !serviceKey) return response(rpcError(null, -32603, "Configuration serveur indisponible."), 500);
 
-  const db = createClient(url, serviceKey, { auth: { persistSession:false, autoRefreshToken:false } });
-  const body = await req.json().catch(() => ({}));
-
-  const agentClientKey = clean(body?.agent_client_key, 120);
-  const eventId = clean(body?.event_id, 180);
-  const eventType = clean(body?.event_type, 80);
-  const summary = clean(body?.summary, 2000);
-  const projectClientKey = clean(body?.project_client_key, 180) || null;
-  const taskClientKey = clean(body?.task_client_key, 180) || null;
-  const happenedAtRaw = clean(body?.happened_at, 80) || new Date().toISOString();
-  const payload = body?.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata) ? body.metadata : {};
-  const dryRun = body?.dry_run === true;
-
-  if (!agentClientKey) return reply({ error:"agent_client_key requis." }, 400);
-  if (!eventId) return reply({ error:"event_id requis pour l'idempotence." }, 400);
-  if (!allowedEvents.has(eventType)) return reply({ error:"event_type non autorisé." }, 400);
-  if (!summary) return reply({ error:"summary requis." }, 400);
-
-  const happenedAt = new Date(happenedAtRaw);
-  if (Number.isNaN(happenedAt.getTime())) return reply({ error:"happened_at invalide." }, 400);
-
-  const tokenHash = await sha256Hex(token);
-  const { data: tokenRow } = await db.from("ai_agent_tokens").select("agent_id,active").eq("token_hash", tokenHash).maybeSingle();
-  if (!tokenRow || tokenRow.active !== true) return reply({ error:"Jeton agent invalide." }, 401);
-
-  const { data: agent } = await db.from("ai_agents").select("id,client_key,name,provider,member_id,active").eq("id", tokenRow.agent_id).maybeSingle();
-  if (!agent || agent.active !== true || agent.client_key !== agentClientKey) return reply({ error:"Agent non autorisé." }, 403);
-
-  const { data: member } = await db.from("team_members").select("id,client_key,display_name,role,active").eq("id", agent.member_id).maybeSingle();
-  if (!member || member.active !== true) return reply({ error:"Membre lié à l'agent indisponible." }, 403);
-
-  const { data: duplicate } = await db.from("ai_events").select("event_id,processing_status").eq("event_id", eventId).maybeSingle();
-  if (duplicate) return reply({ ok:true, duplicate:true, event_id:eventId, status:duplicate.processing_status });
-
-  let project: any = null;
-  let task: any = null;
-
-  if (taskClientKey) {
-    const { data } = await db.from("tasks").select("id,client_key,title,project_id,status,assigned_to_member_id").eq("client_key", taskClientKey).maybeSingle();
-    if (!data) return reply({ error:"Tâche introuvable : " + taskClientKey }, 404);
-    task = data;
-  }
-
-  if (projectClientKey) {
-    const { data } = await db.from("projects").select("id,client_key,name,status").eq("client_key", projectClientKey).maybeSingle();
-    if (!data) return reply({ error:"Projet introuvable : " + projectClientKey }, 404);
-    project = data;
-  } else if (task?.project_id) {
-    const { data } = await db.from("projects").select("id,client_key,name,status").eq("id", task.project_id).maybeSingle();
-    project = data || null;
-  }
-
-  if (task && project && task.project_id && task.project_id !== project.id) return reply({ error:"La tâche ne correspond pas au projet indiqué." }, 409);
-
-  if (project && member.role !== "admin") {
-    const { data: membership } = await db.from("project_members").select("project_id").eq("project_id", project.id).eq("member_id", member.id).maybeSingle();
-    if (!membership) return reply({ error:"L'agent n'a pas accès à ce projet." }, 403);
-  }
-
-  if (task && !project && member.role !== "admin" && task.assigned_to_member_id !== member.id) {
-    return reply({ error:"L'agent n'a pas accès à cette tâche hors projet." }, 403);
-  }
-
-  if (dryRun) return reply({
-    ok:true, dry_run:true, agent:agent.client_key, member:member.client_key,
-    event_type:eventType, project:project?.client_key || null, task:task?.client_key || null,
-    validated_at:new Date().toISOString()
+  const db = createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false }
   });
 
-  const { data: inserted, error: insertError } = await db.from("ai_events").insert({
-    event_id:eventId, agent_id:agent.id, member_id:member.id,
-    project_id:project?.id || null, task_id:task?.id || null,
-    event_type:eventType, summary, payload, happened_at:happenedAt.toISOString(),
-    processing_status:"received", internal_tag:"PILOT-AI-024"
-  }).select("id,event_id").single();
-  if (insertError) return reply({ error:insertError.message }, 400);
+  const auth = await resolveAgent(db, token);
+  if (!auth) return response(rpcError(null, -32001, "Jeton de connecteur invalide."), 401);
 
-  let taskUpdated = false;
-  if (eventType === "task_completed" && task) {
-    const { error } = await db.from("tasks").update({ status:"completed", completed_at:happenedAt.toISOString() }).eq("id", task.id);
-    if (error) {
-      await db.from("ai_events").update({ processing_status:"rejected", processed_at:new Date().toISOString() }).eq("id", inserted.id);
-      return reply({ error:"Événement reçu mais mise à jour tâche impossible : " + error.message }, 409);
+  if (req.method === "GET") {
+    return response({
+      ok: true,
+      server: SERVER_INFO,
+      agent: auth.agent.client_key,
+      member: auth.member.client_key,
+      supported_protocol_versions: SUPPORTED_VERSIONS
+    });
+  }
+
+  if (req.method !== "POST") return response(rpcError(null, -32600, "Méthode HTTP non autorisée."), 405);
+
+  const payload = await req.json().catch(() => null);
+  if (!payload || payload.jsonrpc !== "2.0" || !payload.method) {
+    return response(rpcError(payload?.id, -32600, "Requête JSON-RPC invalide."), 400);
+  }
+
+  const id = payload.id ?? null;
+  const method = payload.method;
+
+  if (method === "initialize") {
+    const requested = payload?.params?.protocolVersion;
+    const protocolVersion = SUPPORTED_VERSIONS.includes(requested) ? requested : "2025-11-25";
+    return response(rpcResult(id, {
+      protocolVersion,
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: SERVER_INFO,
+      instructions: "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Ne remonte que du travail réellement effectué."
+    }), 200, { "Mcp-Session-Id": crypto.randomUUID() });
+  }
+
+  if (method === "notifications/initialized") {
+    return new Response(null, { status: 202, headers: JSON_HEADERS });
+  }
+
+  if (method === "ping") return response(rpcResult(id, {}));
+
+  if (method === "server/discover") {
+    return response(rpcResult(id, {
+      supportedVersions: SUPPORTED_VERSIONS,
+      capabilities: { tools: { listChanged: false } },
+      instructions: "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche.",
+      ttlMs: 60000,
+      cacheScope: "private"
+    }));
+  }
+
+  if (method === "tools/list") {
+    return response(rpcResult(id, {
+      tools: toolsCatalog(),
+      ttlMs: 60000,
+      cacheScope: "private"
+    }));
+  }
+
+  if (method === "tools/call") {
+    const name = payload?.params?.name;
+    const args = payload?.params?.arguments || {};
+
+    if (name === "listPilotageContext") {
+      try {
+        const context = await listContext(db, auth, args);
+        return response(rpcResult(id, {
+          content: [{ type: "text", text: JSON.stringify(context, null, 2) }],
+          structuredContent: context,
+          isError: false
+        }));
+      } catch {
+        return response(rpcResult(id, {
+          content: [{ type: "text", text: "Erreur de lecture du contexte Pilotage." }],
+          isError: true
+        }));
+      }
     }
-    taskUpdated = true;
+
+    if (name === "reportPilotageEvent") {
+      if (!args?.event_type || !args?.summary) {
+        return response(rpcError(id, -32602, "event_type et summary sont requis."), 400);
+      }
+
+      const result = await callIngest(auth, token, args);
+      return response(rpcResult(id, {
+        content: [{
+          type: "text",
+          text: result.ok
+            ? "Remontée enregistrée dans SpeedArti Pilotage."
+            : "Remontée refusée par SpeedArti Pilotage : " + (result.data?.error || ("HTTP " + result.status))
+        }],
+        structuredContent: result.data,
+        isError: !result.ok
+      }), result.ok ? 200 : 400);
+    }
+
+    return response(rpcError(id, -32601, "Outil MCP inconnu : " + String(name || "")), 404);
   }
 
-  await db.from("activity_log").insert({
-    client_key:"ai-event:" + eventId, actor_member_id:member.id,
-    actor_label:member.display_name + " via " + agent.name,
-    project_id:project?.id || null, task_id:task?.id || null,
-    action_type:"ai_event_" + eventType, text:summary,
-    metadata:{ event_id:eventId, event_type:eventType, agent_client_key:agent.client_key, provider:agent.provider, ...payload },
-    internal_tag:"PILOT-AI-025"
-  });
-
-  const reportDate = parisDateKey(happenedAt);
-  const baseKey = "ai-daily:" + agent.client_key + ":" + reportDate;
-  const { data: existing } = await db.from("daily_reports").select("id,client_key,status,achievements,blockers_items,next_steps_items").eq("client_key", baseKey).maybeSingle();
-
-  let reportKey = baseKey;
-  let achievements: string[] = [];
-  let blockers: string[] = [];
-  let nextSteps: string[] = [];
-  if (existing && existing.status === "draft") {
-    achievements = Array.isArray(existing.achievements) ? existing.achievements : [];
-    blockers = Array.isArray(existing.blockers_items) ? existing.blockers_items : [];
-    nextSteps = Array.isArray(existing.next_steps_items) ? existing.next_steps_items : [];
-  } else if (existing) reportKey = baseKey + ":" + eventId;
-
-  if (["work_done","task_created","task_updated","task_completed","project_progress","decision","note"].includes(eventType)) achievements = appendUnique(achievements, summary);
-  if (eventType === "blocker") blockers = appendUnique(blockers, summary);
-  if (eventType === "next_step") nextSteps = appendUnique(nextSteps, summary);
-
-  const summaryLines = [
-    ...achievements.map(x => "✓ " + x),
-    ...blockers.map(x => "Blocage : " + x),
-    ...nextSteps.map(x => "Suite : " + x)
-  ];
-
-  const { data: report, error: reportError } = await db.from("daily_reports").upsert({
-    client_key:reportKey, member_id:member.id, report_date:reportDate, kind:"source",
-    source_type:sourceType(agent.provider, agent.name), ai_agent_id:agent.id,
-    done_summary:achievements.join("\n"), blockers:blockers.join("\n"), next_steps:nextSteps.join("\n"),
-    status:"draft", summary:summaryLines.join("\n"), achievements, blockers_items:blockers, next_steps_items:nextSteps
-  }, { onConflict:"client_key" }).select("id,client_key").single();
-
-  if (reportError) {
-    await db.from("ai_events").update({ processing_status:"rejected", processed_at:new Date().toISOString() }).eq("id", inserted.id);
-    return reply({ error:"Événement reçu mais compte rendu impossible : " + reportError.message }, 409);
-  }
-
-  if (project?.id && report?.id) {
-    await db.from("daily_report_projects").upsert({ report_id:report.id, project_id:project.id }, { onConflict:"report_id,project_id", ignoreDuplicates:true });
-  }
-
-  const processedAt = new Date().toISOString();
-  await Promise.all([
-    db.from("ai_events").update({ processing_status:"processed", processed_at:processedAt }).eq("id", inserted.id),
-    db.from("ai_agents").update({ last_seen_at:processedAt, updated_at:processedAt }).eq("id", agent.id),
-    db.from("ai_agent_tokens").update({ last_used_at:processedAt, updated_at:processedAt }).eq("agent_id", agent.id),
-  ]);
-
-  return reply({
-    ok:true, duplicate:false, event_id:eventId, agent:agent.client_key, member:member.client_key,
-    event_type:eventType, project:project?.client_key || null, task:task?.client_key || null,
-    task_updated:taskUpdated, daily_report:report?.client_key || null, processed_at:processedAt
-  }, 201);
+  return response(rpcError(id, -32601, "Méthode MCP inconnue : " + method), 404);
 });
