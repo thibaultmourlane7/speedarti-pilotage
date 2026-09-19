@@ -142,3 +142,24 @@ Toutes les balises V1 à V11 déjà présentes restent réservées à leur fonct
 - Chaque événement alimente l’activité et le compte rendu IA du jour en brouillon.
 - Un compte rendu déjà validé n’est jamais réouvert : un complément séparé est créé.
 - Les événements sont idempotents grâce à `event_id`.
+
+
+## V16.1 — Passerelle MCP Claude
+
+| Balise | Fonction | Zone | Statut |
+|---|---|---|---|
+| `PILOT-MCP-001` | Serveur MCP distant SpeedArti Pilotage | Edge Function `pilotage-mcp` | Actif V16.1 |
+| `PILOT-MCP-002` | Lecture du contexte projets/tâches accessibles au membre lié à l’IA | Outil MCP `listPilotageContext` | Actif V16.1 |
+| `PILOT-MCP-003` | Remontée structurée d’un événement métier vers V16 | Outil MCP `reportPilotageEvent` | Actif V16.1 |
+| `PILOT-SEC-004` | Authentification du connecteur MCP par jeton agent distinct | URL privée / Bearer + `ai_agent_tokens` | Actif V16.1 |
+| `PILOT-SUPA-014` | Autorise les sources détaillées `chatgpt`, `claude`, `other_ai` dans les comptes rendus | `daily_reports` | Actif V16.1 |
+
+### Règles V16.1
+
+- Le serveur MCP est public sur Internet mais chaque connecteur est protégé par un jeton agent privé.
+- Le jeton n’est jamais stocké en clair dans GitHub ou dans la base.
+- Le serveur déduit automatiquement l’identité de l’agent à partir du jeton : Claude Anne-Sophie ne peut pas se présenter comme une autre IA.
+- `listPilotageContext` expose uniquement les projets et tâches accessibles au membre lié à l’agent.
+- Claude doit utiliser `listPilotageContext` avant de renseigner un identifiant de projet ou de tâche.
+- `reportPilotageEvent` réutilise la passerelle V16 `pilotage-ai-ingest` et ses contrôles métier.
+- La connexion Claude reste à valider depuis le compte d’Anne-Sophie après ajout du connecteur.
