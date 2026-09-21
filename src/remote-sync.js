@@ -207,7 +207,8 @@
 
     const [
       members, projects, projectMembers, agents, tasks, changes,
-      notifications, activity, documents, aiRequests, aiEvents, reports, reportProjects
+      notifications, activity, documents, aiRequests, aiEvents, reports, reportProjects,
+      integrations, driveItems, calendarSources, calendarEvents
     ] = await Promise.all([
       selectAll('team_members'),
       selectAll('projects'),
@@ -221,7 +222,11 @@
       selectAll('ai_requests'),
       selectRecentAiEvents(),
       selectAll('daily_reports'),
-      selectAll('daily_report_projects')
+      selectAll('daily_report_projects'),
+      selectAll('integrations'),
+      selectAll('drive_sync_items'),
+      selectAll('calendar_sources'),
+      selectAll('calendar_events')
     ]);
 
     Object.values(maps).forEach(map => map.clear());
@@ -437,6 +442,77 @@
       validatedBy: memberClient(row.validated_by_member_id)
     }));
 
+    const integrationOwner = new Map(integrations.map(row => [row.id, memberClient(row.owner_member_id)]));
+
+    const localIntegrations = integrations.map(row => ({
+      id: row.id,
+      ownerId: memberClient(row.owner_member_id),
+      provider: row.provider,
+      status: row.status,
+      configuration: row.configuration || {},
+      lastSyncedAt: row.last_synced_at || null,
+      lastError: row.last_error || null
+    }));
+
+    const localDriveItems = driveItems.map(row => ({
+      id: row.id,
+      integrationId: row.integration_id,
+      ownerId: integrationOwner.get(row.integration_id) || null,
+      projectId: projectClient(row.project_id),
+      externalFileId: row.external_file_id,
+      parentExternalFileId: row.parent_external_file_id || null,
+      name: row.name,
+      mimeType: row.mime_type || null,
+      url: row.web_url || '',
+      relativePath: row.relative_path || '',
+      isFolder: Boolean(row.is_folder),
+      trashed: Boolean(row.trashed),
+      modifiedTime: row.modified_time || null,
+      sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
+      lastSyncedAt: row.last_synced_at || null
+    }));
+
+    const sourceByUuid = new Map(calendarSources.map(row => [row.id, row]));
+    const localCalendarSources = calendarSources.map(row => ({
+      id: row.id,
+      integrationId: row.integration_id,
+      ownerId: integrationOwner.get(row.integration_id) || null,
+      externalCalendarId: row.external_calendar_id,
+      name: row.name,
+      description: row.description || '',
+      timezone: row.timezone || null,
+      accessRole: row.access_role || null,
+      primary: Boolean(row.is_primary),
+      selected: Boolean(row.selected),
+      syncMode: row.sync_mode || 'read_only',
+      sharedWithTeam: Boolean(row.shared_with_team),
+      lastSyncedAt: row.last_synced_at || null
+    }));
+
+    const localCalendarEvents = calendarEvents.map(row => {
+      const source = sourceByUuid.get(row.calendar_source_id);
+      const at = row.start_at || (row.start_date ? `${row.start_date}T00:00:00` : null);
+      return {
+        id: row.id,
+        externalEventId: row.external_event_id,
+        calendarSourceId: row.calendar_source_id,
+        calendarName: source?.name || 'Google Calendar',
+        ownerId: source ? integrationOwner.get(source.integration_id) || null : null,
+        projectId: projectClient(row.project_id),
+        taskId: taskClient(row.task_id),
+        title: row.summary || '(Sans titre)',
+        description: row.description || '',
+        location: row.location || '',
+        at,
+        endAt: row.end_at || null,
+        allDay: Boolean(row.all_day),
+        url: row.html_link || '',
+        status: row.status || null,
+        organizerEmail: row.organizer_email || null,
+        lastSyncedAt: row.last_synced_at || null
+      };
+    });
+
     const liveState = {
       ...localBase,
       currentUser: {
@@ -458,8 +534,10 @@
       aiRequests: localAiRequests,
       aiEvents: localAiEvents,
       dailyReports: localReports,
-      // Google Calendar sera branché dans un lot dédié. On évite les faux rendez-vous de la démo.
-      calendarEvents: [],
+      integrations: localIntegrations,
+      driveItems: localDriveItems,
+      calendarSources: localCalendarSources,
+      calendarEvents: localCalendarEvents,
       remoteMode: true,
       remoteHydratedAt: new Date().toISOString()
     };
