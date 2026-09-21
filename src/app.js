@@ -2573,7 +2573,38 @@ function bindEvents() {
   document.querySelectorAll('[data-calendar-view]').forEach(el => el.addEventListener('click', () => { calendarView = el.dataset.calendarView; trace(TAGS.CALENDAR_VIEW, 'Vue agenda', { view:calendarView }); render(); }));
   document.querySelector('#documentSearch')?.addEventListener('input', e => { documentSearch = e.target.value; trace(TAGS.DOCUMENT_FILTER, 'Recherche document', { query:documentSearch }); render(); requestAnimationFrame(() => { const input=document.querySelector('#documentSearch'); if(input){ input.focus(); input.setSelectionRange(input.value.length,input.value.length); } }); });
   document.querySelector('#documentProjectFilter')?.addEventListener('change', e => { documentProjectFilter = e.target.value; trace(TAGS.DOCUMENT_FILTER, 'Filtre document projet', { projectId:documentProjectFilter }); render(); });
-  document.querySelectorAll('[data-open-doc]').forEach(el => el.addEventListener('click', () => { const d=state.documents.find(x=>x.id===el.dataset.openDoc); if(d?.url) window.open(d.url, '_blank', 'noopener'); }));
+  document.querySelectorAll('[data-open-doc]').forEach(el => el.addEventListener('click', () => { const d=allDocumentRefs().find(x=>x.id===el.dataset.openDoc); if(d?.url) window.open(d.url, '_blank', 'noopener'); }));
+  document.querySelectorAll('[data-open-url]').forEach(el => el.addEventListener('click', () => { const url=el.dataset.openUrl; if(url) window.open(url, '_blank', 'noopener'); }));
+  document.querySelectorAll('[data-drive-project]').forEach(el => el.addEventListener('change', () => linkDriveItemToProject(el.dataset.driveProject, el.value || null)));
+
+  document.querySelector('#googleConnectDrive')?.addEventListener('click', connectGoogle);
+  document.querySelector('#googleConnectCalendar')?.addEventListener('click', connectGoogle);
+  document.querySelector('#googleDriveChoose')?.addEventListener('click', openGoogleDrivePicker);
+  document.querySelector('#googleDriveSync')?.addEventListener('click', syncGoogleDrive);
+  document.querySelector('#googleCalendarRefresh')?.addEventListener('click', refreshGoogleCalendars);
+  document.querySelector('#googleCalendarSaveSelection')?.addEventListener('click', saveGoogleCalendarSelection);
+  document.querySelector('#googleCalendarSync')?.addEventListener('click', syncGoogleCalendars);
+  document.querySelectorAll('[data-calendar-link]').forEach(el => el.addEventListener('click', () => openGoogleCalendarLink(el.dataset.calendarLink)));
+
+  document.querySelector('#closeGoogleDrivePicker')?.addEventListener('click', closeGoogleDrivePicker);
+  document.querySelector('#cancelGoogleDrivePicker')?.addEventListener('click', closeGoogleDrivePicker);
+  document.querySelector('#googleDrivePickerBackdrop')?.addEventListener('click', closeGoogleDrivePicker);
+  document.querySelector('#googleDriveBack')?.addEventListener('click', backGoogleDriveFolder);
+  document.querySelector('#googleDriveSelectCurrent')?.addEventListener('click', selectGoogleDriveCurrent);
+  document.querySelectorAll('[data-drive-browse]').forEach(el => el.addEventListener('click', () => browseGoogleDriveFolder({ id:el.dataset.driveBrowse, name:el.dataset.driveName, driveId:el.dataset.driveId || null, kind:el.dataset.driveId ? 'shared_drive' : 'folder' })));
+
+  document.querySelector('#closeGoogleCalendarLink')?.addEventListener('click', closeGoogleCalendarLink);
+  document.querySelector('#cancelGoogleCalendarLink')?.addEventListener('click', closeGoogleCalendarLink);
+  document.querySelector('#googleCalendarLinkBackdrop')?.addEventListener('click', closeGoogleCalendarLink);
+  document.querySelector('#saveGoogleCalendarLink')?.addEventListener('click', saveGoogleCalendarLink);
+  document.querySelector('#googleCalendarProject')?.addEventListener('change', () => {
+    const select = document.querySelector('#googleCalendarTask');
+    if (!select) return;
+    const projectId = document.querySelector('#googleCalendarProject')?.value || null;
+    const event = state.calendarEvents.find(item => item.id === googleCalendarLinkEventId);
+    const tasks = state.tasks.filter(t => !projectId || t.projectId === projectId);
+    select.innerHTML = `<option value="">Aucune tâche</option>${tasks.map(t => `<option value="${t.id}" ${event?.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}`;
+  });
 
   document.querySelector('#notificationBtn')?.addEventListener('click', () => { notificationOpen = !notificationOpen; trace(TAGS.NOTIFICATION_DRAWER, 'Drawer notifications', { open: notificationOpen }); render(); });
   document.querySelector('#openNotifFromToday')?.addEventListener('click', () => { notificationOpen = true; notificationFilter='action'; render(); });
