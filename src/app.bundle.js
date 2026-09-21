@@ -329,6 +329,7 @@ let googleDriveFolders = [];
 let googleDriveCurrent = null;
 let googleDriveStack = [];
 let googleBusy = '';
+let googleDriveProgressText = '';
 let googleCalendarLinkEventId = null;
 
 // PILOT-AI-018 / PILOT-UI-043 — assistant ChatGPT Pilotage réel.
@@ -436,7 +437,10 @@ function integration(provider, ownerId = state.currentUser.id) {
   return (state.integrations || []).find(x => x.provider === provider && x.ownerId === ownerId) || null;
 }
 function driveDocumentRefs() {
-  return (state.driveItems || []).filter(item => !item.isFolder).map(item => ({
+  return (state.driveItems || [])
+    .filter(item => !item.isFolder)
+    .filter(item => !/(^|\/)node_modules\//i.test(item.relativePath || ''))
+    .map(item => ({
     id:`drive-${item.id}`,
     driveItemId:item.id,
     projectId:item.projectId || null,
@@ -1130,7 +1134,8 @@ function renderGoogleDrivePanel() {
         <button class="secondary-btn" id="googleDriveChoose" ${googleBusy ? 'disabled' : ''}>${rootName ? 'Changer le dossier' : 'Choisir le dossier'}</button>
         <button class="primary-btn" id="googleDriveSync" ${!rootName || googleBusy ? 'disabled' : ''}>${googleBusy === 'drive-sync' ? 'Synchronisation…' : 'Synchroniser'}</button>
       </div>
-    </div>` : `<div class="google-integration-body"><p>Connecte ton compte Google puis choisis <strong>un seul dossier racine</strong>. Pilotage synchronisera uniquement ce dossier et ses sous-dossiers.</p><button class="primary-btn" id="googleConnectDrive" ${googleBusy ? 'disabled' : ''}>Connecter Google</button></div>`}
+    </div>
+    ${googleDriveProgressText ? `<div class="drive-sync-progress">${esc(googleDriveProgressText)}</div>` : ''}` : `<div class="google-integration-body"><p>Connecte ton compte Google puis choisis <strong>un seul dossier racine</strong>. Pilotage synchronisera uniquement ce dossier et ses sous-dossiers.</p><button class="primary-btn" id="googleConnectDrive" ${googleBusy ? 'disabled' : ''}>Connecter Google</button></div>`}
     ${error ? `<p class="integration-error">${esc(error)}</p>` : ''}
   </section>`;
 }
@@ -2681,8 +2686,31 @@ async function selectGoogleDriveCurrent() {
 }
 
 async function syncGoogleDrive() {
-  const result = await googleRun('drive-sync', () => window.PILOTAGE_GOOGLE.syncDrive());
-  if (result?.ok) trace(TAGS.GOOGLE_DRIVE_SYNC, 'Drive synchronisé', { count:result.count || 0 });
+  if (!window.PILOTAGE_GOOGLE?.syncDrive) return window.alert('Le module Google Drive n’est pas disponible.');
+  googleBusy = 'drive-sync';
+  googleDriveProgressText = 'Démarrage de la synchronisation…';
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.syncDrive(progress => {
+      googleDriveProgressText = progress.done
+        ? 'Synchronisation terminée : ' + progress.total + ' éléments indexés.'
+        : 'Synchronisation en cours : ' + progress.total + ' éléments indexés · ' + progress.remainingFolders + ' dossiers restants.';
+      const node = document.querySelector('.drive-sync-progress');
+      if (node) node.textContent = googleDriveProgressText;
+    });
+    if (result?.ok) {
+      googleDriveProgressText = 'Synchronisation terminée : ' + (result.total || result.count || 0) + ' éléments indexés.';
+      trace(TAGS.GOOGLE_DRIVE_SYNC, 'Drive synchronisé', { count:result.total || result.count || 0 });
+      if (window.PILOTAGE_REMOTE?.refreshFromSupabase) await window.PILOTAGE_REMOTE.refreshFromSupabase();
+    }
+  } catch (error) {
+    console.error(error);
+    googleDriveProgressText = error?.message || 'Synchronisation Drive impossible.';
+    window.alert(googleDriveProgressText);
+  } finally {
+    googleBusy = '';
+    render();
+  }
 }
 
 async function refreshGoogleCalendars() {
