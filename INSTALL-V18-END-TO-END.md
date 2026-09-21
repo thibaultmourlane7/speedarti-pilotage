@@ -1,70 +1,64 @@
 # Installation V18 — Google Drive + Google Agenda
 
-## État sur le projet Supabase actuel
+## Principe
 
-Les migrations de fondation et de sécurisation V18 ont déjà été appliquées au projet `veovtygcolfsrjocrhsf`. Elles sont fournies ici pour conserver GitHub comme source de vérité documentaire.
+La V18 est ajoutée sans refondre ni remplacer les fichiers métier existants.
 
-## 1. Fichiers frontend
+Le socle V10 à V16 reste intact. L'intégration Google est chargée comme un module additionnel.
 
-Remplacer les fichiers complets suivants par ceux de ce lot :
-
-- `index.html`
-- `src/app.js`
-- `src/app.bundle.js`
-- `src/remote-sync.js`
-- `src/styles.css`
-- `src/tags.js`
-
-Ajouter :
+## Fichiers ajoutés
 
 - `src/google-integrations.js`
+- `src/v18-google-ui.js`
+- `supabase/functions/pilotage-google/index.ts`
+- `supabase/functions/pilotage-google/deno.json`
+- migrations V18 dans `supabase/migrations/`
+- `V18-GOOGLE-DRIVE-CALENDAR.md`
 
-Ne pas supprimer les autres fichiers existants.
+## Fichiers existants modifiés
 
-## 2. Google Cloud
+- `index.html` : charge les deux modules Google avant `auth.js`
+- `src/tags.js` : ajoute les balises V18
+- `docs/TAGS.md` : documente les balises V18
 
-Créer ou utiliser un projet Google Cloud dédié à SpeedArti Pilotage et activer :
+Aucun remplacement de `src/app.js`, `src/app.bundle.js`, `src/remote-sync.js` ou `src/styles.css` n'est nécessaire dans cette branche.
 
+## Supabase
+
+Les tables, RLS et structures Drive/Calendar sont déjà déployées sur le projet Pilotage.
+
+L'Edge Function `pilotage-google` est déployée. Elle accepte le callback OAuth Google publiquement, mais toutes les actions applicatives POST vérifient elles-mêmes la session Supabase de l'utilisateur.
+
+## Google Cloud à configurer
+
+Activer :
 - Google Drive API
 - Google Calendar API
 
-Configurer l'écran de consentement OAuth, puis créer un client OAuth de type **Application Web**.
+Créer un client OAuth Web.
 
-URI de redirection à déclarer :
+URI de redirection :
 
 `https://veovtygcolfsrjocrhsf.supabase.co/functions/v1/pilotage-google/callback`
 
-Ajouter également le domaine réel de Pilotage dans les origines autorisées du client OAuth.
-
-## 3. Secrets Supabase
-
-Configurer exclusivement dans les secrets Supabase :
-
+Configurer uniquement dans les secrets Supabase :
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_TOKEN_ENCRYPTION_KEY`
 
-`GOOGLE_TOKEN_ENCRYPTION_KEY` doit être une valeur aléatoire longue et privée. Ne jamais la placer dans GitHub.
+Ne jamais placer ces valeurs dans GitHub.
 
-## 4. Edge Function
+## Tests obligatoires avant merge sur main
 
-Déployer :
+1. Thibault connecte Google.
+2. Drive : choisir un seul dossier racine et vérifier que seuls ses descendants remontent.
+3. Drive : tester Mon Drive et, si disponible, un Drive partagé.
+4. Drive : rattacher un fichier synchronisé à un projet.
+5. Agenda : charger tous les agendas accessibles.
+6. Agenda : sélectionner les agendas à synchroniser.
+7. Agenda : tester le partage explicite d'un agenda avec l'équipe.
+8. Agenda : synchroniser les événements.
+9. Refaire la connexion et les contrôles avec Anne-Sophie.
+10. Refaire la connexion et les contrôles avec Guillaume.
 
-- `supabase/functions/pilotage-google/index.ts`
-
-La fonction doit accepter le callback OAuth Google, donc son authentification Supabase native ne doit pas bloquer les requêtes GET du callback. L'Edge Function contrôle elle-même les JWT pour les actions applicatives.
-
-## 5. Tests obligatoires avant validation
-
-1. Se connecter avec Thibault.
-2. Ouvrir Documents > Connecter Google.
-3. Choisir un dossier Drive racine.
-4. Vérifier que seuls ce dossier et ses sous-dossiers apparaissent après synchronisation.
-5. Rattacher un fichier synchronisé à un projet.
-6. Ouvrir Agenda > Actualiser les agendas.
-7. Sélectionner un ou plusieurs agendas et choisir explicitement ceux visibles par l'équipe.
-8. Synchroniser les événements.
-9. Associer un événement à un projet/tâche.
-10. Refaire les tests avec Anne-Sophie puis Guillaume.
-
-Ne passer les tâches V18 en `completed` qu'après ces tests réels.
+Ne passer V18 en terminé qu'après ces tests réels.
