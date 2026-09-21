@@ -102,8 +102,9 @@ async function setGoogleConnected(db: ReturnType<typeof dbClient>, memberId: str
   }
 }
 async function markIntegrationError(db: ReturnType<typeof dbClient>, integrationId: string, error: unknown) {
+  // Une erreur de synchronisation ne déconnecte pas le compte OAuth.
+  // On garde donc le statut de connexion et on expose seulement l'erreur.
   await db.from("integrations").update({
-    status: "error",
     last_error: error instanceof Error ? error.message : String(error),
     updated_at: new Date().toISOString(),
   }).eq("id", integrationId);
@@ -330,56 +331,130 @@ Deno.serve(async (req: Request) => {
       const config = integration.configuration || {};
       const rootId = config.root_folder_id;
       if (!rootId) return response({ error: "Choisis d’abord le dossier Drive à synchroniser." }, 400);
+
       const driveId = config.drive_id || null;
-      const queue: Array<{ id: string; path: string }> = [{ id: rootId, path: "" }];
-      const rows: any[] = [];
-      let safety = 0;
-      while (queue.length && safety < 10000) {
-        const current = queue.shift()!;
-        let pageToken = "";
-        do {
-          const params = new URLSearchParams({
-            q: `'${current.id.replaceAll("'", "\\'")}' in parents and trashed=false`,
-            pageSize: "1000",
-            fields: "nextPageToken,files(id,name,mimeType,modifiedTime,size,md5Checksum,webViewLink,parents,driveId,trashed)",
-            supportsAllDrives: "true",
-            includeItemsFromAllDrives: "true",
-          });
-          if (pageToken) params.set("pageToken", pageToken);
-          if (driveId) { params.set("corpora", "drive"); params.set("driveId", driveId); }
-          const data = await googleFetch(token, `https://www.googleapis.com/drive/v3/files?${params}`);
-          for (const file of data.files || []) {
-            safety += 1;
-            const isFolder = file.mimeType === FOLDER_MIME;
-            const relativePath = current.path ? `${current.path}/${file.name}` : file.name;
-            rows.push({
-              integration_id: integration.id,
-              external_file_id: file.id,
-              parent_external_file_id: current.id,
-              name: file.name,
-              mime_type: file.mimeType || null,
-              web_url: file.webViewLink || null,
-              relative_path: relativePath,
-              is_folder: isFolder,
-              trashed: Boolean(file.trashed),
-              modified_time: file.modifiedTime || null,
-              size_bytes: file.size ? Number(file.size) : null,
-              checksum: file.md5Checksum || null,
-              last_synced_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            });
-            if (isFolder && config.include_subfolders !== false) queue.push({ id: file.id, path: relativePath });
-            if (safety >= 10000) break;
+      const storedCursor = config.drive_sync_cursor || null;
+      const cursor = storedCursor && storedCursor.root_id === rootId
+        ? {
+            root_id: rootId,
+            run_id: storedCursor.run_id || crypto.randomUUID(),
+            queue: Array.isArray(storedCursor.queue) ? storedCursor.queue : [],
+            current: storedCursor.current || null,
+            page_token: storedCursor.page_token || "",
+            total: Number(storedCursor.total || 0),
           }
-          pageToken = data.nextPageToken || "";
-        } while (pageToken && safety < 10000);
+        : {
+            root_id: rootId,
+            run_id: crypto.randomUUID(),
+            queue: [{ id: rootId, path: "" }],
+            current: null,
+            page_token: "",
+            total: 0,
+          };
+
+      // Le parcours est volontairement découpé en petits lots pour éviter
+      // le timeout d'une Edge Function sur un dossier avec beaucoup de fichiers.
+      const MAX_API_CALLS = 5;
+      const PAGE_SIZE = 100;
+      let apiCalls = 0;
+      let processedThisBatch = 0;
+
+      while (apiCalls < MAX_API_CALLS && (cursor.current || cursor.queue.length)) {
+        if (!cursor.current) {
+          cursor.current = cursor.queue.shift() || null;
+          cursor.page_token = "";
+          if (!cursor.current) break;
+        }
+
+        const current = cursor.current;
+        const params = new URLSearchParams({
+          q: `'${String(current.id).replaceAll("'", "\\\\'")}' in parents and trashed=false`,
+          pageSize: String(PAGE_SIZE),
+          fields: "nextPageToken,files(id,name,mimeType,modifiedTime,size,md5Checksum,webViewLink,parents,driveId,trashed)",
+          supportsAllDrives: "true",
+          includeItemsFromAllDrives: "true",
+        });
+        if (cursor.page_token) params.set("pageToken", cursor.page_token);
+        if (driveId) {
+          params.set("corpora", "drive");
+          params.set("driveId", driveId);
+        }
+
+        const data = await googleFetch(token, `https://www.googleapis.com/drive/v3/files?${params}`);
+        apiCalls += 1;
+
+        const rows: any[] = [];
+        for (const file of data.files || []) {
+          const isFolder = file.mimeType === FOLDER_MIME;
+          const relativePath = current.path ? `${current.path}/${file.name}` : file.name;
+          rows.push({
+            integration_id: integration.id,
+            external_file_id: file.id,
+            parent_external_file_id: current.id,
+            name: file.name,
+            mime_type: file.mimeType || null,
+            web_url: file.webViewLink || null,
+            relative_path: relativePath,
+            is_folder: isFolder,
+            trashed: Boolean(file.trashed),
+            modified_time: file.modifiedTime || null,
+            size_bytes: file.size ? Number(file.size) : null,
+            checksum: file.md5Checksum || null,
+            last_synced_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+          if (isFolder && config.include_subfolders !== false) {
+            cursor.queue.push({ id: file.id, path: relativePath });
+          }
+        }
+
+        if (rows.length) {
+          const { error } = await db.from("drive_sync_items")
+            .upsert(rows, { onConflict: "integration_id,external_file_id" });
+          if (error) throw error;
+          processedThisBatch += rows.length;
+          cursor.total += rows.length;
+        }
+
+        if (data.nextPageToken) {
+          cursor.page_token = data.nextPageToken;
+        } else {
+          cursor.current = null;
+          cursor.page_token = "";
+        }
       }
-      for (let i = 0; i < rows.length; i += 400) {
-        const { error } = await db.from("drive_sync_items").upsert(rows.slice(i, i + 400), { onConflict: "integration_id,external_file_id" });
-        if (error) throw error;
+
+      const done = !cursor.current && cursor.queue.length === 0;
+      const updatedConfiguration = { ...config };
+
+      if (done) {
+        delete updatedConfiguration.drive_sync_cursor;
+        updatedConfiguration.last_drive_sync_count = cursor.total;
+        updatedConfiguration.last_drive_sync_run_id = cursor.run_id;
+        await db.from("integrations").update({
+          status: "connected",
+          configuration: updatedConfiguration,
+          last_synced_at: new Date().toISOString(),
+          last_error: null,
+          updated_at: new Date().toISOString(),
+        }).eq("id", integration.id);
+      } else {
+        updatedConfiguration.drive_sync_cursor = cursor;
+        await db.from("integrations").update({
+          status: "connected",
+          configuration: updatedConfiguration,
+          last_error: null,
+          updated_at: new Date().toISOString(),
+        }).eq("id", integration.id);
       }
-      await db.from("integrations").update({ status: "connected", last_synced_at: new Date().toISOString(), last_error: null, updated_at: new Date().toISOString() }).eq("id", integration.id);
-      return response({ ok: true, count: rows.length, capped: safety >= 10000 });
+
+      return response({
+        ok: true,
+        done,
+        count: processedThisBatch,
+        total: cursor.total,
+        remaining_folders: cursor.queue.length + (cursor.current ? 1 : 0),
+      });
     }
 
     if (action === "link_drive_item") {
