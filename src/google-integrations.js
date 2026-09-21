@@ -82,9 +82,33 @@
     },
     syncDrive: async () => {
       trace(TAGS.DRIVE_SYNC, 'Synchronisation Drive demandée');
-      const r = await invoke('sync_drive');
+      let result = null;
+      let total = 0;
+      let rounds = 0;
+
+      do {
+        result = await invoke('sync_drive');
+        total = Number(result?.total ?? (total + Number(result?.count || 0)));
+        rounds += 1;
+        trace(TAGS.DRIVE_SYNC, 'Lot Drive synchronisé', {
+          round: rounds,
+          batch: Number(result?.count || 0),
+          total,
+          done: result?.done !== false,
+          remainingFolders: Number(result?.remaining_folders || 0)
+        });
+
+        if (result?.done === false) {
+          await new Promise(resolve => setTimeout(resolve, 80));
+        }
+      } while (result?.done === false && rounds < 100);
+
+      if (result?.done === false) {
+        throw new Error('La synchronisation Drive est trop volumineuse pour être terminée en une seule session. Relance la synchronisation pour reprendre.');
+      }
+
       await refreshPilotage();
-      return r;
+      return { ...(result || {}), count: total, total };
     },
     linkDriveItem: async (itemId, projectClientKey = null) => {
       trace(TAGS.DRIVE_LINK, 'Association Drive / projet', { itemId, projectClientKey });
