@@ -28,6 +28,10 @@
     return Array.isArray(localState().projects) ? localState().projects.filter(p => !p.archived) : [];
   }
 
+  function tasks() {
+    return Array.isArray(localState().tasks) ? localState().tasks.filter(t => t.status !== 'completed') : [];
+  }
+
   function teamNameByUuid(uuid) {
     const state = localState();
     const current = window.PILOTAGE_AUTH?.member;
@@ -153,6 +157,8 @@
       const ownerMap = new Map(allIntegrations.map(i => [i.id, teamNameByUuid(i.owner_member_id)]));
       const sourceMap = new Map(sources.map(s => [s.id, s]));
       const ownSources = sources.filter(s => s.integration_id === own?.id);
+      const projectOptions = projects().map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+      const taskOptions = tasks().map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('');
       insertPanel(`
         <div class="g18-head"><div><h2>Google Agenda</h2><p>Chaque membre connecte son compte et choisit les agendas à synchroniser.</p></div><span class="g18-status ${connected ? 'ok' : status.configured ? 'warn' : 'err'}">${connected ? 'Connecté' : status.configured ? 'À connecter' : 'Google Cloud à configurer'}</span></div>
         <div class="g18-grid">
@@ -164,7 +170,7 @@
         </div>
         ${!status.configured ? '<div class="g18-note">La partie applicative est prête. Il reste à renseigner les identifiants OAuth Google dans les secrets Supabase.</div>' : ''}
         ${connected ? `<div class="g18-list"><div class="g18-row"><div><strong>Mes agendas</strong><small>Sélectionne ceux qui remontent dans Pilotage. « Partager équipe » les rend visibles aux autres membres Pilotage.</small></div><div></div></div>${ownSources.map(s => `<div class="g18-row"><div><strong>${esc(s.name)}</strong><small>${s.is_primary ? 'Principal · ' : ''}${esc(s.timezone || '')}</small></div><div class="g18-row-actions"><label class="g18-check"><input type="checkbox" data-g18-cal-selected="${esc(s.external_calendar_id)}" ${s.selected ? 'checked' : ''}> Synchroniser</label><label class="g18-check"><input type="checkbox" data-g18-cal-shared="${esc(s.external_calendar_id)}" ${s.shared_with_team ? 'checked' : ''}> Partager équipe</label></div></div>`).join('') || '<div class="g18-row"><div><strong>Aucun agenda chargé.</strong><small>Clique sur « Actualiser la liste ».</small></div><div></div></div>'}</div>
-        <div class="g18-list"><div class="g18-row"><div><strong>Événements Google synchronisés</strong><small>${events.length} événement(s) affiché(s).</small></div><div></div></div>${events.slice(0,50).map(e => { const s=sourceMap.get(e.calendar_source_id); const when=e.start_at ? fmtDate(e.start_at) : (e.start_date || 'Journée entière'); return `<div class="g18-row"><div><strong>${esc(e.summary || 'Sans titre')}</strong><small>${esc(when)} · ${esc(s?.name || 'Agenda')} · ${esc(ownerMap.get(s?.integration_id) || '')}</small></div><div class="g18-row-actions">${e.html_link ? `<a class="g18-btn secondary" href="${esc(e.html_link)}" target="_blank" rel="noopener">Ouvrir</a>` : ''}</div></div>`; }).join('') || '<div class="g18-row"><div><strong>Aucun événement synchronisé.</strong><small>Lance une synchronisation après avoir sélectionné tes agendas.</small></div><div></div></div>'}</div>` : ''}
+        <div class="g18-list"><div class="g18-row"><div><strong>Événements Google synchronisés</strong><small>${events.length} événement(s) affiché(s). Tu peux rattacher un événement à un projet et/ou une tâche Pilotage.</small></div><div></div></div>${events.slice(0,50).map(e => { const s=sourceMap.get(e.calendar_source_id); const when=e.start_at ? fmtDate(e.start_at) : (e.start_date || 'Journée entière'); return `<div class="g18-row"><div><strong>${esc(e.summary || 'Sans titre')}</strong><small>${esc(when)} · ${esc(s?.name || 'Agenda')} · ${esc(ownerMap.get(s?.integration_id) || '')}</small></div><div class="g18-row-actions"><select data-g18-event-project="${esc(e.id)}"><option value="">Projet (optionnel)</option>${projectOptions}</select><select data-g18-event-task="${esc(e.id)}"><option value="">Tâche (optionnel)</option>${taskOptions}</select><button class="g18-btn ghost" data-g18-link-event="${esc(e.id)}">Rattacher</button>${e.html_link ? `<a class="g18-btn secondary" href="${esc(e.html_link)}" target="_blank" rel="noopener">Ouvrir</a>` : ''}</div></div>`; }).join('') || '<div class="g18-row"><div><strong>Aucun événement synchronisé.</strong><small>Lance une synchronisation après avoir sélectionné tes agendas.</small></div><div></div></div>'}</div>` : ''}
       `);
       bindPanelEvents();
     } catch (error) {
@@ -284,6 +290,20 @@
       btn.disabled = true;
       try {
         await google().linkDriveItem(itemId, projectId);
+        btn.textContent = 'Rattaché';
+      } catch (error) {
+        btn.disabled = false;
+        window.alert(error.message || String(error));
+      }
+    }));
+    panel.querySelectorAll('[data-g18-link-event]').forEach(btn => btn.addEventListener('click', async () => {
+      if (busy) return;
+      const eventId = btn.dataset.g18LinkEvent;
+      const projectId = panel.querySelector(`[data-g18-event-project="${CSS.escape(eventId)}"]`)?.value || null;
+      const taskId = panel.querySelector(`[data-g18-event-task="${CSS.escape(eventId)}"]`)?.value || null;
+      btn.disabled = true;
+      try {
+        await google().linkCalendarEvent(eventId, projectId, taskId);
         btn.textContent = 'Rattaché';
       } catch (error) {
         btn.disabled = false;
