@@ -153,7 +153,6 @@ function resetState() {
   return clone(initialState);
 }
 
-
 // Référentiel de balises internes SpeedArti Pilotage.
 // Les balises ne doivent jamais être affichées dans l'interface.
 const TAGS = Object.freeze({
@@ -262,12 +261,28 @@ const TAGS = Object.freeze({
   AI_EVENT_IDEMPOTENCY: 'PILOT-AI-027',
   AI_CONNECTOR_AUTH: 'PILOT-SEC-003',
   AI_SOURCE_STATUS: 'PILOT-UI-044',
-  SUPA_AI_EVENT_LOAD: 'PILOT-SUPA-013'
+  SUPA_AI_EVENT_LOAD: 'PILOT-SUPA-013',
+  MCP_REMOTE_BRIDGE: 'PILOT-MCP-001',
+  MCP_CONTEXT_TOOL: 'PILOT-MCP-002',
+  MCP_EVENT_TOOL: 'PILOT-MCP-003',
+  MCP_CONNECTOR_AUTH: 'PILOT-SEC-004',
+  REPORT_AI_SOURCE_TYPES: 'PILOT-SUPA-014',
+  GOOGLE_FOUNDATION: 'PILOT-GOOGLE-001',
+  GOOGLE_API: 'PILOT-GOOGLE-002',
+  GOOGLE_OAUTH: 'PILOT-GOOGLE-003',
+  GOOGLE_DRIVE_PICKER: 'PILOT-GOOGLE-004',
+  GOOGLE_DRIVE_SYNC: 'PILOT-GOOGLE-005',
+  GOOGLE_DRIVE_PROJECT_LINK: 'PILOT-GOOGLE-006',
+  GOOGLE_CALENDAR_LIST: 'PILOT-GOOGLE-007',
+  GOOGLE_CALENDAR_SYNC: 'PILOT-GOOGLE-008',
+  GOOGLE_CALENDAR_PROJECT_LINK: 'PILOT-GOOGLE-009',
+  GOOGLE_CALENDAR_SELECTION: 'PILOT-GOOGLE-010'
 });
 
 function trace(tag, message, details = {}) {
   console.debug(`[${tag}] ${message}`, details);
 }
+
 
 
 
@@ -306,6 +321,16 @@ let dailyReportDate = currentDateKey();
 let dailyReportPersonFilter = 'all';
 let dailyReportPresetPersonId = null;
 
+// PILOT-GOOGLE-004 / 009 — sélecteur Drive et association Agenda.
+let googleDrivePickerOpen = false;
+let googleDrivePickerBusy = false;
+let googleDriveRoots = [];
+let googleDriveFolders = [];
+let googleDriveCurrent = null;
+let googleDriveStack = [];
+let googleBusy = '';
+let googleCalendarLinkEventId = null;
+
 // PILOT-AI-018 / PILOT-UI-043 — assistant ChatGPT Pilotage réel.
 let assistantMessages = [];
 let assistantLoading = false;
@@ -318,6 +343,10 @@ state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequest
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
 state.aiEvents = Array.isArray(state.aiEvents) ? state.aiEvents : [];
 state.dailyReports = Array.isArray(state.dailyReports) ? state.dailyReports : [];
+state.integrations = Array.isArray(state.integrations) ? state.integrations : [];
+state.driveItems = Array.isArray(state.driveItems) ? state.driveItems : [];
+state.calendarSources = Array.isArray(state.calendarSources) ? state.calendarSources : [];
+state.calendarEvents = Array.isArray(state.calendarEvents) ? state.calendarEvents : [];
 // PILOT-UI-040 — toutes les dates opérationnelles utilisent désormais l’horloge réelle de l’appareil.
 
 const app = document.querySelector('#app');
@@ -403,6 +432,30 @@ function esc(value = '') {
 function teamName(id) { return state.team.find(x => x.id === id)?.name || 'Non attribué'; }
 function project(id) { return state.projects.find(x => x.id === id); }
 function task(id) { return state.tasks.find(x => x.id === id); }
+function integration(provider, ownerId = state.currentUser.id) {
+  return (state.integrations || []).find(x => x.provider === provider && x.ownerId === ownerId) || null;
+}
+function driveDocumentRefs() {
+  return (state.driveItems || []).filter(item => !item.isFolder).map(item => ({
+    id:`drive-${item.id}`,
+    driveItemId:item.id,
+    projectId:item.projectId || null,
+    name:item.name,
+    type:item.mimeType?.includes('spreadsheet') ? 'Tableur' : item.mimeType === 'application/pdf' ? 'PDF' : 'Document',
+    source:'Google Drive · synchronisé',
+    url:item.url || '',
+    externalFileId:item.externalFileId,
+    relativePath:item.relativePath || item.name,
+    ownerId:item.ownerId,
+    lastSyncedAt:item.lastSyncedAt || null
+  }));
+}
+function allDocumentRefs() { return [...(state.documents || []), ...driveDocumentRefs()]; }
+function formatSyncDate(value) {
+  if (!value) return 'Jamais synchronisé';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? 'Synchronisation inconnue' : `Synchro ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`;
+}
 
 function formatTime(iso) { return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function formatDate(iso) { return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }); }
@@ -720,6 +773,8 @@ function layout(content) {
       ${taskModalOpen ? renderTaskModal() : ''}
       ${projectModalOpen ? renderProjectModal() : ''}
       ${documentModalOpen ? renderDocumentModal() : ''}
+      ${googleDrivePickerOpen ? renderGoogleDrivePickerModal() : ''}
+      ${googleCalendarLinkEventId ? renderGoogleCalendarLinkModal(googleCalendarLinkEventId) : ''}
       ${approvalRequestId ? renderApprovalModal(approvalRequestId) : ''}
       ${quickActionOpen ? renderQuickActionModal() : ''}
       ${archiveModalProjectId ? renderArchiveModal(archiveModalProjectId) : ''}
@@ -1040,7 +1095,7 @@ function renderProjectDetail(id) {
   const p = project(id);
   if (!p) { selectedProjectId = null; return renderProjects(); }
   const tasks = state.tasks.filter(t => t.projectId === id);
-  const docs = state.documents.filter(d => d.projectId === id);
+  const docs = allDocumentRefs().filter(d => d.projectId === id);
   const activities = state.activity.filter(a => a.projectId === id).slice(0,5);
   return `
     <button class="back-btn" id="backProjects">← Projets</button>
@@ -1059,13 +1114,59 @@ function renderProjectDetail(id) {
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
 }
 
+function renderGoogleDrivePanel() {
+  const drive = integration('google_drive');
+  const connected = drive?.status === 'connected';
+  const rootName = drive?.configuration?.root_folder_name || '';
+  const error = drive?.lastError || '';
+  return `<section class="section google-integration-card">
+    <div class="google-integration-head">
+      <div><span class="google-logo">G</span><div><strong>Google Drive</strong><small>${connected ? 'Connecté en lecture seule' : 'Non connecté'}</small></div></div>
+      <span class="integration-pill ${connected ? 'is-connected' : 'is-disconnected'}">${connected ? 'Connecté' : 'À connecter'}</span>
+    </div>
+    ${connected ? `<div class="google-integration-body">
+      <div><small>Dossier synchronisé</small><strong>${esc(rootName || 'Aucun dossier sélectionné')}</strong><span>${esc(formatSyncDate(drive.lastSyncedAt))}</span></div>
+      <div class="google-integration-actions">
+        <button class="secondary-btn" id="googleDriveChoose" ${googleBusy ? 'disabled' : ''}>${rootName ? 'Changer le dossier' : 'Choisir le dossier'}</button>
+        <button class="primary-btn" id="googleDriveSync" ${!rootName || googleBusy ? 'disabled' : ''}>${googleBusy === 'drive-sync' ? 'Synchronisation…' : 'Synchroniser'}</button>
+      </div>
+    </div>` : `<div class="google-integration-body"><p>Connecte ton compte Google puis choisis <strong>un seul dossier racine</strong>. Pilotage synchronisera uniquement ce dossier et ses sous-dossiers.</p><button class="primary-btn" id="googleConnectDrive" ${googleBusy ? 'disabled' : ''}>Connecter Google</button></div>`}
+    ${error ? `<p class="integration-error">${esc(error)}</p>` : ''}
+  </section>`;
+}
+
+function renderGoogleCalendarPanel() {
+  const cal = integration('google_calendar');
+  const connected = cal?.status === 'connected';
+  const sources = (state.calendarSources || []).filter(source => source.ownerId === state.currentUser.id);
+  const selected = sources.filter(source => source.selected).length;
+  return `<section class="section google-integration-card">
+    <div class="google-integration-head">
+      <div><span class="google-logo">G</span><div><strong>Google Agenda</strong><small>${connected ? `${selected} agenda${selected > 1 ? 's' : ''} actif${selected > 1 ? 's' : ''}` : 'Non connecté'}</small></div></div>
+      <span class="integration-pill ${connected ? 'is-connected' : 'is-disconnected'}">${connected ? 'Connecté' : 'À connecter'}</span>
+    </div>
+    ${connected ? `<div class="google-integration-actions calendar-actions">
+      <button class="secondary-btn" id="googleCalendarRefresh" ${googleBusy ? 'disabled' : ''}>Actualiser les agendas</button>
+      <button class="primary-btn" id="googleCalendarSync" ${googleBusy ? 'disabled' : ''}>${googleBusy === 'calendar-sync' ? 'Synchronisation…' : 'Synchroniser les événements'}</button>
+    </div>
+    <div class="calendar-source-list">
+      ${sources.length ? sources.map(source => `<div class="calendar-source-row">
+        <label><input type="checkbox" data-google-calendar-selected="${esc(source.externalCalendarId)}" ${source.selected ? 'checked' : ''} /> <strong>${esc(source.name)}</strong>${source.primary ? '<small>Principal</small>' : ''}</label>
+        <label class="calendar-share"><input type="checkbox" data-google-calendar-shared="${esc(source.externalCalendarId)}" ${source.sharedWithTeam ? 'checked' : ''} /> Visible équipe</label>
+      </div>`).join('') : '<div class="empty-line">Clique sur “Actualiser les agendas” pour récupérer la liste.</div>'}
+    </div>
+    ${sources.length ? '<button class="text-button" id="googleCalendarSaveSelection">Enregistrer la sélection</button>' : ''}` : `<div class="google-integration-body"><p>Chaque membre connecte son propre compte. Il choisit les agendas à synchroniser et ceux qu’il souhaite rendre visibles à l’équipe.</p><button class="primary-btn" id="googleConnectCalendar" ${googleBusy ? 'disabled' : ''}>Connecter Google</button></div>`}
+    ${cal?.lastError ? `<p class="integration-error">${esc(cal.lastError)}</p>` : ''}
+  </section>`;
+}
+
 function renderCalendar() {
   const ref = new Date();
   const today = currentDateKey();
   const startWeek = startOfWeek(ref);
   const endWeek = endOfWeek(ref);
   const events = [
-    ...state.calendarEvents.map(e => ({...e, source:'google', label:'Google Calendar'})),
+    ...state.calendarEvents.map(e => ({...e, source:'google', label:e.calendarName || 'Google Calendar'})),
     ...state.tasks.filter(t => t.scheduledFor).map(t => ({ id:`scheduled-${t.id}`, taskId:t.id, at:dateAtHourIso(t.scheduledFor, 9), title:t.title, source:'SpeedArti', label:'Tâche planifiée' })),
     ...state.tasks.filter(t => t.dueAt).map(t => ({ id:`due-${t.id}`, taskId:t.id, at:t.dueAt, title:t.title, source:'SpeedArti', label:'Échéance' }))
   ].filter(e => e.at).sort((a,b) => new Date(a.at)-new Date(b.at));
@@ -1078,7 +1179,8 @@ function renderCalendar() {
   });
 
   const title = calendarView === 'today' ? longDateLabel(today) : calendarView === 'week' ? weekLabel(ref) : monthLabel(ref);
-  return pageHeader('Agenda', 'Rendez-vous, tâches prévues et échéances au même endroit') + `
+  return pageHeader('Agenda', 'Rendez-vous Google, tâches prévues et échéances au même endroit') + `
+    ${renderGoogleCalendarPanel()}
     <div class="tabs">
       <button class="${calendarView === 'today' ? 'active' : ''}" data-calendar-view="today">Aujourd’hui</button>
       <button class="${calendarView === 'week' ? 'active' : ''}" data-calendar-view="week">Semaine</button>
@@ -1086,28 +1188,60 @@ function renderCalendar() {
     </div>
     <section class="section"><div class="date-heading">${title}</div><div class="agenda-list">${visible.map(e => {
       const inner = `<time>${calendarView === 'today' ? formatTime(e.at) : `${dateKey(e.at).slice(8,10)}/${dateKey(e.at).slice(5,7)} ${formatTime(e.at)}`}</time><div><strong>${esc(e.title)}</strong><small>${esc(e.label)}</small></div>`;
-      return e.taskId
-        ? `<button class="agenda-row source-speedarti ${e.label === 'Échéance' ? 'source-deadline' : ''}" data-edit-task="${e.taskId}">${inner}</button>`
-        : `<div class="agenda-row source-google">${inner}</div>`;
+      if (e.taskId && e.source !== 'google') return `<button class="agenda-row source-speedarti ${e.label === 'Échéance' ? 'source-deadline' : ''}" data-edit-task="${e.taskId}">${inner}</button>`;
+      const canLink = e.source === 'google' && (e.ownerId === state.currentUser.id || isAdmin());
+      return `<div class="agenda-row source-google">${inner}${canLink ? `<button class="text-button agenda-link-btn" data-calendar-link="${e.id}">${e.projectId || e.taskId ? 'Modifier le lien' : 'Associer'}</button>` : ''}${e.url ? `<button class="text-button" data-open-url="${esc(e.url)}">Ouvrir</button>` : ''}</div>`;
     }).join('') || '<div class="empty-line">Aucun élément dans cette période.</div>'}</div></section>`;
 }
 
 function renderDocuments() {
   const q = documentSearch.trim().toLowerCase();
-  const docs = state.documents.filter(d => {
+  const docs = allDocumentRefs().filter(d => {
     if (documentProjectFilter !== 'all' && d.projectId !== documentProjectFilter) return false;
-    if (q && !`${d.name} ${d.type || ''} ${project(d.projectId)?.name || ''}`.toLowerCase().includes(q)) return false;
+    if (q && !`${d.name} ${d.type || ''} ${d.relativePath || ''} ${project(d.projectId)?.name || ''}`.toLowerCase().includes(q)) return false;
     return true;
   });
   const grouped = state.projects.map(p => ({ project:p, docs:docs.filter(d => d.projectId === p.id) })).filter(g => g.docs.length);
   const orphan = docs.filter(d => !d.projectId);
-  return pageHeader('Documents', 'Les fichiers restent dans Google Drive : Pilotage ne conserve que la référence', '<button class="primary-btn" data-action="link-document">+ Lier un document Drive</button>') + `
+  const docRow = d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}${d.relativePath ? ` · ${esc(d.relativePath)}` : ''}</small></div>${d.driveItemId && (d.ownerId === state.currentUser.id || isAdmin()) ? `<select class="drive-project-select" data-drive-project="${d.driveItemId}" title="Rattacher à un projet"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${d.projectId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`;
+  return pageHeader('Documents', 'Google Drive reste la source : Pilotage synchronise uniquement le dossier choisi', '<button class="primary-btn" data-action="link-document">+ Lier une référence</button>') + `
+    ${renderGoogleDrivePanel()}
     <div class="toolbar"><input id="documentSearch" class="search-field" value="${esc(documentSearch)}" placeholder="Rechercher un fichier…" /><select id="documentProjectFilter"><option value="all">Tous les projets</option>${state.projects.map(p => `<option value="${p.id}" ${documentProjectFilter === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     <div class="documents-list">
-      ${grouped.map(({project:p,docs:list}) => `<section class="section doc-group"><h2>${esc(p.name)}</h2>${list.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('')}</section>`).join('')}
-      ${orphan.length ? `<section class="section doc-group"><h2>Sans projet</h2>${orphan.map(d => `<div class="doc-row"><span class="doc-icon doc-document">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('')}</section>` : ''}
+      ${grouped.map(({project:p,docs:list}) => `<section class="section doc-group"><h2>${esc(p.name)}</h2>${list.map(docRow).join('')}</section>`).join('')}
+      ${orphan.length ? `<section class="section doc-group"><h2>Sans projet</h2>${orphan.map(docRow).join('')}</section>` : ''}
       ${!docs.length ? '<div class="empty-state">Aucun document trouvé.</div>' : ''}
     </div>`;
+}
+
+function renderGoogleDrivePickerModal() {
+  const current = googleDriveCurrent;
+  const rootsMode = !current;
+  const rows = rootsMode ? googleDriveRoots : googleDriveFolders;
+  return `<div class="modal-backdrop" id="googleDrivePickerBackdrop"></div><div class="modal-card google-picker-modal" role="dialog" aria-modal="true">
+    <header><div><small>GOOGLE DRIVE</small><h2>Choisir le dossier à synchroniser</h2></div><button class="icon-btn" id="closeGoogleDrivePicker">×</button></header>
+    <p class="form-note">Pilotage synchronisera uniquement le dossier choisi et ses sous-dossiers. Aucun autre dossier du Drive ne sera parcouru.</p>
+    ${current ? `<div class="folder-current"><button class="text-button" id="googleDriveBack">← Retour</button><div><small>Dossier actuel</small><strong>${esc(current.name)}</strong></div><button class="primary-btn" id="googleDriveSelectCurrent" ${googleDrivePickerBusy ? 'disabled' : ''}>Choisir ce dossier</button></div>` : '<div class="folder-current"><div><small>Emplacement</small><strong>Mes espaces Drive</strong></div></div>'}
+    <div class="folder-browser">
+      ${googleDrivePickerBusy ? '<div class="empty-line">Chargement…</div>' : rows.length ? rows.map(folder => `<button class="folder-row" data-drive-browse="${esc(folder.id)}" data-drive-name="${esc(folder.name)}" data-drive-id="${esc(folder.drive_id || current?.driveId || '')}"><span>▣</span><strong>${esc(folder.name)}</strong><small>${folder.kind === 'shared_drive' ? 'Drive partagé' : 'Dossier'}</small><b>›</b></button>`).join('') : '<div class="empty-line">Aucun sous-dossier.</div>'}
+    </div>
+    <footer><button class="secondary-btn" id="cancelGoogleDrivePicker">Annuler</button></footer>
+  </div>`;
+}
+
+function renderGoogleCalendarLinkModal(eventId) {
+  const event = state.calendarEvents.find(item => item.id === eventId);
+  if (!event) return '';
+  const tasks = state.tasks.filter(t => !event.projectId || t.projectId === event.projectId);
+  return `<div class="modal-backdrop" id="googleCalendarLinkBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
+    <header><div><small>GOOGLE AGENDA</small><h2>Associer l’événement</h2></div><button class="icon-btn" id="closeGoogleCalendarLink">×</button></header>
+    <div class="form-grid">
+      <div class="form-field form-field-full"><span>Événement</span><strong>${esc(event.title)}</strong></div>
+      <label class="form-field form-field-full"><span>Projet</span><select id="googleCalendarProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${event.projectId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Tâche (optionnel)</span><select id="googleCalendarTask"><option value="">Aucune tâche</option>${tasks.map(t => `<option value="${t.id}" ${event.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>
+    </div>
+    <footer><button class="secondary-btn" id="cancelGoogleCalendarLink">Annuler</button><button class="primary-btn" id="saveGoogleCalendarLink">Enregistrer</button></footer>
+  </div>`;
 }
 
 function renderActivityItem(a) {
@@ -2416,6 +2550,192 @@ function deferTask(choice) {
 function openTeamWorkload() { teamWorkloadOpen=true; trace(TAGS.TEAM_WORKLOAD, 'Vue charge équipe ouverte'); render(); }
 function closeTeamWorkload() { teamWorkloadOpen=false; render(); }
 
+async function googleRun(label, fn) {
+  if (!window.PILOTAGE_GOOGLE) {
+    window.alert('Le module Google n’est pas chargé.');
+    return null;
+  }
+  googleBusy = label;
+  render();
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(error);
+    window.alert(error?.message || 'Action Google impossible pour le moment.');
+    return null;
+  } finally {
+    googleBusy = '';
+    render();
+  }
+}
+
+async function connectGoogle() {
+  if (!window.PILOTAGE_GOOGLE?.connect) return window.alert('Le module Google n’est pas disponible.');
+  googleBusy = 'oauth';
+  render();
+  try {
+    await window.PILOTAGE_GOOGLE.connect();
+  } catch (error) {
+    googleBusy = '';
+    render();
+    window.alert(error?.message || 'Connexion Google impossible.');
+  }
+}
+
+async function openGoogleDrivePicker() {
+  googleDrivePickerOpen = true;
+  googleDrivePickerBusy = true;
+  googleDriveRoots = [];
+  googleDriveFolders = [];
+  googleDriveCurrent = null;
+  googleDriveStack = [];
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.listDriveRoots();
+    googleDriveRoots = result?.roots || [];
+  } catch (error) {
+    googleDrivePickerOpen = false;
+    window.alert(error?.message || 'Impossible de lire Google Drive.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+function closeGoogleDrivePicker() {
+  googleDrivePickerOpen = false;
+  googleDrivePickerBusy = false;
+  googleDriveRoots = [];
+  googleDriveFolders = [];
+  googleDriveCurrent = null;
+  googleDriveStack = [];
+  render();
+}
+
+async function browseGoogleDriveFolder(folder) {
+  if (!folder?.id) return;
+  if (googleDriveCurrent) googleDriveStack.push({ ...googleDriveCurrent });
+  googleDriveCurrent = {
+    id: folder.id,
+    name: folder.name || 'Dossier',
+    driveId: folder.driveId || folder.drive_id || null,
+    kind: folder.kind || 'folder'
+  };
+  googleDrivePickerBusy = true;
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.listDriveFolder(googleDriveCurrent.id, googleDriveCurrent.driveId);
+    googleDriveFolders = (result?.folders || []).map(item => ({
+      id:item.id,
+      name:item.name,
+      driveId:item.driveId || googleDriveCurrent.driveId || null,
+      kind:'folder'
+    }));
+  } catch (error) {
+    window.alert(error?.message || 'Impossible d’ouvrir ce dossier.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+async function backGoogleDriveFolder() {
+  const previous = googleDriveStack.pop() || null;
+  if (!previous) {
+    googleDriveCurrent = null;
+    googleDriveFolders = [];
+    render();
+    return;
+  }
+  googleDriveCurrent = previous;
+  googleDrivePickerBusy = true;
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.listDriveFolder(previous.id, previous.driveId);
+    googleDriveFolders = (result?.folders || []).map(item => ({ id:item.id, name:item.name, driveId:item.driveId || previous.driveId || null, kind:'folder' }));
+  } catch (error) {
+    window.alert(error?.message || 'Impossible de revenir à ce dossier.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+async function selectGoogleDriveCurrent() {
+  if (!googleDriveCurrent) return;
+  googleDrivePickerBusy = true;
+  render();
+  try {
+    await window.PILOTAGE_GOOGLE.selectDriveRoot(googleDriveCurrent.id, googleDriveCurrent.driveId);
+    googleDrivePickerOpen = false;
+    googleDriveFolders = [];
+    googleDriveCurrent = null;
+    googleDriveStack = [];
+    trace(TAGS.GOOGLE_DRIVE_PICKER, 'Dossier racine Google Drive sélectionné');
+  } catch (error) {
+    window.alert(error?.message || 'Sélection du dossier impossible.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+async function syncGoogleDrive() {
+  const result = await googleRun('drive-sync', () => window.PILOTAGE_GOOGLE.syncDrive());
+  if (result?.ok) trace(TAGS.GOOGLE_DRIVE_SYNC, 'Drive synchronisé', { count:result.count || 0 });
+}
+
+async function refreshGoogleCalendars() {
+  const result = await googleRun('calendar-list', () => window.PILOTAGE_GOOGLE.listCalendars());
+  if (result?.ok) trace(TAGS.GOOGLE_CALENDAR_LIST, 'Agendas Google actualisés', { count:result.calendars?.length || 0 });
+}
+
+async function saveGoogleCalendarSelection() {
+  const sources = (state.calendarSources || []).filter(source => source.ownerId === state.currentUser.id);
+  const selections = sources.map(source => {
+    const selectedInput = document.querySelector(`[data-google-calendar-selected="${CSS.escape(source.externalCalendarId)}"]`);
+    const sharedInput = document.querySelector(`[data-google-calendar-shared="${CSS.escape(source.externalCalendarId)}"]`);
+    return {
+      external_calendar_id: source.externalCalendarId,
+      selected: Boolean(selectedInput?.checked),
+      shared_with_team: Boolean(sharedInput?.checked)
+    };
+  });
+  const result = await googleRun('calendar-save', () => window.PILOTAGE_GOOGLE.setCalendarSelection(selections));
+  if (result?.ok) trace(TAGS.GOOGLE_CALENDAR_SELECTION, 'Sélection Agenda enregistrée', { count:selections.filter(x => x.selected).length });
+}
+
+async function syncGoogleCalendars() {
+  const result = await googleRun('calendar-sync', () => window.PILOTAGE_GOOGLE.syncCalendars());
+  if (result?.ok) trace(TAGS.GOOGLE_CALENDAR_SYNC, 'Agendas Google synchronisés', { count:result.count || 0 });
+}
+
+async function linkDriveItemToProject(itemId, projectClientKey) {
+  const result = await googleRun('drive-link', () => window.PILOTAGE_GOOGLE.linkDriveItem(itemId, projectClientKey || null));
+  if (result?.ok) trace(TAGS.GOOGLE_DRIVE_PROJECT_LINK, 'Fichier Drive rattaché', { itemId, projectClientKey:projectClientKey || null });
+}
+
+function openGoogleCalendarLink(eventId) {
+  googleCalendarLinkEventId = eventId;
+  render();
+}
+function closeGoogleCalendarLink() {
+  googleCalendarLinkEventId = null;
+  render();
+}
+async function saveGoogleCalendarLink() {
+  const event = state.calendarEvents.find(item => item.id === googleCalendarLinkEventId);
+  if (!event) return closeGoogleCalendarLink();
+  const projectId = document.querySelector('#googleCalendarProject')?.value || null;
+  const taskId = document.querySelector('#googleCalendarTask')?.value || null;
+  const result = await googleRun('calendar-link', () => window.PILOTAGE_GOOGLE.linkCalendarEvent(event.id, projectId, taskId));
+  if (result?.ok) {
+    trace(TAGS.GOOGLE_CALENDAR_PROJECT_LINK, 'Événement Agenda rattaché', { eventId:event.id, projectId, taskId });
+    googleCalendarLinkEventId = null;
+    render();
+  }
+}
+
 function bindEvents() {
   document.querySelector('#assistantSend')?.addEventListener('click', () => sendAssistantMessage());
   document.querySelector('#assistantInput')?.addEventListener('keydown', e => {
@@ -2538,7 +2858,38 @@ function bindEvents() {
   document.querySelectorAll('[data-calendar-view]').forEach(el => el.addEventListener('click', () => { calendarView = el.dataset.calendarView; trace(TAGS.CALENDAR_VIEW, 'Vue agenda', { view:calendarView }); render(); }));
   document.querySelector('#documentSearch')?.addEventListener('input', e => { documentSearch = e.target.value; trace(TAGS.DOCUMENT_FILTER, 'Recherche document', { query:documentSearch }); render(); requestAnimationFrame(() => { const input=document.querySelector('#documentSearch'); if(input){ input.focus(); input.setSelectionRange(input.value.length,input.value.length); } }); });
   document.querySelector('#documentProjectFilter')?.addEventListener('change', e => { documentProjectFilter = e.target.value; trace(TAGS.DOCUMENT_FILTER, 'Filtre document projet', { projectId:documentProjectFilter }); render(); });
-  document.querySelectorAll('[data-open-doc]').forEach(el => el.addEventListener('click', () => { const d=state.documents.find(x=>x.id===el.dataset.openDoc); if(d?.url) window.open(d.url, '_blank', 'noopener'); }));
+  document.querySelectorAll('[data-open-doc]').forEach(el => el.addEventListener('click', () => { const d=allDocumentRefs().find(x=>x.id===el.dataset.openDoc); if(d?.url) window.open(d.url, '_blank', 'noopener'); }));
+  document.querySelectorAll('[data-open-url]').forEach(el => el.addEventListener('click', () => { const url=el.dataset.openUrl; if(url) window.open(url, '_blank', 'noopener'); }));
+  document.querySelectorAll('[data-drive-project]').forEach(el => el.addEventListener('change', () => linkDriveItemToProject(el.dataset.driveProject, el.value || null)));
+
+  document.querySelector('#googleConnectDrive')?.addEventListener('click', connectGoogle);
+  document.querySelector('#googleConnectCalendar')?.addEventListener('click', connectGoogle);
+  document.querySelector('#googleDriveChoose')?.addEventListener('click', openGoogleDrivePicker);
+  document.querySelector('#googleDriveSync')?.addEventListener('click', syncGoogleDrive);
+  document.querySelector('#googleCalendarRefresh')?.addEventListener('click', refreshGoogleCalendars);
+  document.querySelector('#googleCalendarSaveSelection')?.addEventListener('click', saveGoogleCalendarSelection);
+  document.querySelector('#googleCalendarSync')?.addEventListener('click', syncGoogleCalendars);
+  document.querySelectorAll('[data-calendar-link]').forEach(el => el.addEventListener('click', () => openGoogleCalendarLink(el.dataset.calendarLink)));
+
+  document.querySelector('#closeGoogleDrivePicker')?.addEventListener('click', closeGoogleDrivePicker);
+  document.querySelector('#cancelGoogleDrivePicker')?.addEventListener('click', closeGoogleDrivePicker);
+  document.querySelector('#googleDrivePickerBackdrop')?.addEventListener('click', closeGoogleDrivePicker);
+  document.querySelector('#googleDriveBack')?.addEventListener('click', backGoogleDriveFolder);
+  document.querySelector('#googleDriveSelectCurrent')?.addEventListener('click', selectGoogleDriveCurrent);
+  document.querySelectorAll('[data-drive-browse]').forEach(el => el.addEventListener('click', () => browseGoogleDriveFolder({ id:el.dataset.driveBrowse, name:el.dataset.driveName, driveId:el.dataset.driveId || null, kind:el.dataset.driveId ? 'shared_drive' : 'folder' })));
+
+  document.querySelector('#closeGoogleCalendarLink')?.addEventListener('click', closeGoogleCalendarLink);
+  document.querySelector('#cancelGoogleCalendarLink')?.addEventListener('click', closeGoogleCalendarLink);
+  document.querySelector('#googleCalendarLinkBackdrop')?.addEventListener('click', closeGoogleCalendarLink);
+  document.querySelector('#saveGoogleCalendarLink')?.addEventListener('click', saveGoogleCalendarLink);
+  document.querySelector('#googleCalendarProject')?.addEventListener('change', () => {
+    const select = document.querySelector('#googleCalendarTask');
+    if (!select) return;
+    const projectId = document.querySelector('#googleCalendarProject')?.value || null;
+    const event = state.calendarEvents.find(item => item.id === googleCalendarLinkEventId);
+    const tasks = state.tasks.filter(t => !projectId || t.projectId === projectId);
+    select.innerHTML = `<option value="">Aucune tâche</option>${tasks.map(t => `<option value="${t.id}" ${event?.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}`;
+  });
 
   document.querySelector('#notificationBtn')?.addEventListener('click', () => { notificationOpen = !notificationOpen; trace(TAGS.NOTIFICATION_DRAWER, 'Drawer notifications', { open: notificationOpen }); render(); });
   document.querySelector('#openNotifFromToday')?.addEventListener('click', () => { notificationOpen = true; notificationFilter='action'; render(); });
