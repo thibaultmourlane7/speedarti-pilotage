@@ -488,6 +488,8 @@ function layout(content) {
       ${taskModalOpen ? renderTaskModal() : ''}
       ${projectModalOpen ? renderProjectModal() : ''}
       ${documentModalOpen ? renderDocumentModal() : ''}
+      ${googleDrivePickerOpen ? renderGoogleDrivePickerModal() : ''}
+      ${googleCalendarLinkEventId ? renderGoogleCalendarLinkModal(googleCalendarLinkEventId) : ''}
       ${approvalRequestId ? renderApprovalModal(approvalRequestId) : ''}
       ${quickActionOpen ? renderQuickActionModal() : ''}
       ${archiveModalProjectId ? renderArchiveModal(archiveModalProjectId) : ''}
@@ -808,7 +810,7 @@ function renderProjectDetail(id) {
   const p = project(id);
   if (!p) { selectedProjectId = null; return renderProjects(); }
   const tasks = state.tasks.filter(t => t.projectId === id);
-  const docs = state.documents.filter(d => d.projectId === id);
+  const docs = allDocumentRefs().filter(d => d.projectId === id);
   const activities = state.activity.filter(a => a.projectId === id).slice(0,5);
   return `
     <button class="back-btn" id="backProjects">← Projets</button>
@@ -827,13 +829,59 @@ function renderProjectDetail(id) {
     <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
 }
 
+function renderGoogleDrivePanel() {
+  const drive = integration('google_drive');
+  const connected = drive?.status === 'connected';
+  const rootName = drive?.configuration?.root_folder_name || '';
+  const error = drive?.lastError || '';
+  return `<section class="section google-integration-card">
+    <div class="google-integration-head">
+      <div><span class="google-logo">G</span><div><strong>Google Drive</strong><small>${connected ? 'Connecté en lecture seule' : 'Non connecté'}</small></div></div>
+      <span class="integration-pill ${connected ? 'is-connected' : 'is-disconnected'}">${connected ? 'Connecté' : 'À connecter'}</span>
+    </div>
+    ${connected ? `<div class="google-integration-body">
+      <div><small>Dossier synchronisé</small><strong>${esc(rootName || 'Aucun dossier sélectionné')}</strong><span>${esc(formatSyncDate(drive.lastSyncedAt))}</span></div>
+      <div class="google-integration-actions">
+        <button class="secondary-btn" id="googleDriveChoose" ${googleBusy ? 'disabled' : ''}>${rootName ? 'Changer le dossier' : 'Choisir le dossier'}</button>
+        <button class="primary-btn" id="googleDriveSync" ${!rootName || googleBusy ? 'disabled' : ''}>${googleBusy === 'drive-sync' ? 'Synchronisation…' : 'Synchroniser'}</button>
+      </div>
+    </div>` : `<div class="google-integration-body"><p>Connecte ton compte Google puis choisis <strong>un seul dossier racine</strong>. Pilotage synchronisera uniquement ce dossier et ses sous-dossiers.</p><button class="primary-btn" id="googleConnectDrive" ${googleBusy ? 'disabled' : ''}>Connecter Google</button></div>`}
+    ${error ? `<p class="integration-error">${esc(error)}</p>` : ''}
+  </section>`;
+}
+
+function renderGoogleCalendarPanel() {
+  const cal = integration('google_calendar');
+  const connected = cal?.status === 'connected';
+  const sources = (state.calendarSources || []).filter(source => source.ownerId === state.currentUser.id);
+  const selected = sources.filter(source => source.selected).length;
+  return `<section class="section google-integration-card">
+    <div class="google-integration-head">
+      <div><span class="google-logo">G</span><div><strong>Google Agenda</strong><small>${connected ? `${selected} agenda${selected > 1 ? 's' : ''} actif${selected > 1 ? 's' : ''}` : 'Non connecté'}</small></div></div>
+      <span class="integration-pill ${connected ? 'is-connected' : 'is-disconnected'}">${connected ? 'Connecté' : 'À connecter'}</span>
+    </div>
+    ${connected ? `<div class="google-integration-actions calendar-actions">
+      <button class="secondary-btn" id="googleCalendarRefresh" ${googleBusy ? 'disabled' : ''}>Actualiser les agendas</button>
+      <button class="primary-btn" id="googleCalendarSync" ${googleBusy ? 'disabled' : ''}>${googleBusy === 'calendar-sync' ? 'Synchronisation…' : 'Synchroniser les événements'}</button>
+    </div>
+    <div class="calendar-source-list">
+      ${sources.length ? sources.map(source => `<div class="calendar-source-row">
+        <label><input type="checkbox" data-google-calendar-selected="${esc(source.externalCalendarId)}" ${source.selected ? 'checked' : ''} /> <strong>${esc(source.name)}</strong>${source.primary ? '<small>Principal</small>' : ''}</label>
+        <label class="calendar-share"><input type="checkbox" data-google-calendar-shared="${esc(source.externalCalendarId)}" ${source.sharedWithTeam ? 'checked' : ''} /> Visible équipe</label>
+      </div>`).join('') : '<div class="empty-line">Clique sur “Actualiser les agendas” pour récupérer la liste.</div>'}
+    </div>
+    ${sources.length ? '<button class="text-button" id="googleCalendarSaveSelection">Enregistrer la sélection</button>' : ''}` : `<div class="google-integration-body"><p>Chaque membre connecte son propre compte. Il choisit les agendas à synchroniser et ceux qu’il souhaite rendre visibles à l’équipe.</p><button class="primary-btn" id="googleConnectCalendar" ${googleBusy ? 'disabled' : ''}>Connecter Google</button></div>`}
+    ${cal?.lastError ? `<p class="integration-error">${esc(cal.lastError)}</p>` : ''}
+  </section>`;
+}
+
 function renderCalendar() {
   const ref = new Date();
   const today = currentDateKey();
   const startWeek = startOfWeek(ref);
   const endWeek = endOfWeek(ref);
   const events = [
-    ...state.calendarEvents.map(e => ({...e, source:'google', label:'Google Calendar'})),
+    ...state.calendarEvents.map(e => ({...e, source:'google', label:e.calendarName || 'Google Calendar'})),
     ...state.tasks.filter(t => t.scheduledFor).map(t => ({ id:`scheduled-${t.id}`, taskId:t.id, at:dateAtHourIso(t.scheduledFor, 9), title:t.title, source:'SpeedArti', label:'Tâche planifiée' })),
     ...state.tasks.filter(t => t.dueAt).map(t => ({ id:`due-${t.id}`, taskId:t.id, at:t.dueAt, title:t.title, source:'SpeedArti', label:'Échéance' }))
   ].filter(e => e.at).sort((a,b) => new Date(a.at)-new Date(b.at));
@@ -846,7 +894,8 @@ function renderCalendar() {
   });
 
   const title = calendarView === 'today' ? longDateLabel(today) : calendarView === 'week' ? weekLabel(ref) : monthLabel(ref);
-  return pageHeader('Agenda', 'Rendez-vous, tâches prévues et échéances au même endroit') + `
+  return pageHeader('Agenda', 'Rendez-vous Google, tâches prévues et échéances au même endroit') + `
+    ${renderGoogleCalendarPanel()}
     <div class="tabs">
       <button class="${calendarView === 'today' ? 'active' : ''}" data-calendar-view="today">Aujourd’hui</button>
       <button class="${calendarView === 'week' ? 'active' : ''}" data-calendar-view="week">Semaine</button>
@@ -854,28 +903,60 @@ function renderCalendar() {
     </div>
     <section class="section"><div class="date-heading">${title}</div><div class="agenda-list">${visible.map(e => {
       const inner = `<time>${calendarView === 'today' ? formatTime(e.at) : `${dateKey(e.at).slice(8,10)}/${dateKey(e.at).slice(5,7)} ${formatTime(e.at)}`}</time><div><strong>${esc(e.title)}</strong><small>${esc(e.label)}</small></div>`;
-      return e.taskId
-        ? `<button class="agenda-row source-speedarti ${e.label === 'Échéance' ? 'source-deadline' : ''}" data-edit-task="${e.taskId}">${inner}</button>`
-        : `<div class="agenda-row source-google">${inner}</div>`;
+      if (e.taskId && e.source !== 'google') return `<button class="agenda-row source-speedarti ${e.label === 'Échéance' ? 'source-deadline' : ''}" data-edit-task="${e.taskId}">${inner}</button>`;
+      const canLink = e.source === 'google' && (e.ownerId === state.currentUser.id || isAdmin());
+      return `<div class="agenda-row source-google">${inner}${canLink ? `<button class="text-button agenda-link-btn" data-calendar-link="${e.id}">${e.projectId || e.taskId ? 'Modifier le lien' : 'Associer'}</button>` : ''}${e.url ? `<button class="text-button" data-open-url="${esc(e.url)}">Ouvrir</button>` : ''}</div>`;
     }).join('') || '<div class="empty-line">Aucun élément dans cette période.</div>'}</div></section>`;
 }
 
 function renderDocuments() {
   const q = documentSearch.trim().toLowerCase();
-  const docs = state.documents.filter(d => {
+  const docs = allDocumentRefs().filter(d => {
     if (documentProjectFilter !== 'all' && d.projectId !== documentProjectFilter) return false;
-    if (q && !`${d.name} ${d.type || ''} ${project(d.projectId)?.name || ''}`.toLowerCase().includes(q)) return false;
+    if (q && !`${d.name} ${d.type || ''} ${d.relativePath || ''} ${project(d.projectId)?.name || ''}`.toLowerCase().includes(q)) return false;
     return true;
   });
   const grouped = state.projects.map(p => ({ project:p, docs:docs.filter(d => d.projectId === p.id) })).filter(g => g.docs.length);
   const orphan = docs.filter(d => !d.projectId);
-  return pageHeader('Documents', 'Les fichiers restent dans Google Drive : Pilotage ne conserve que la référence', '<button class="primary-btn" data-action="link-document">+ Lier un document Drive</button>') + `
+  const docRow = d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}${d.relativePath ? ` · ${esc(d.relativePath)}` : ''}</small></div>${d.driveItemId && (d.ownerId === state.currentUser.id || isAdmin()) ? `<select class="drive-project-select" data-drive-project="${d.driveItemId}" title="Rattacher à un projet"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${d.projectId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`;
+  return pageHeader('Documents', 'Google Drive reste la source : Pilotage synchronise uniquement le dossier choisi', '<button class="primary-btn" data-action="link-document">+ Lier une référence</button>') + `
+    ${renderGoogleDrivePanel()}
     <div class="toolbar"><input id="documentSearch" class="search-field" value="${esc(documentSearch)}" placeholder="Rechercher un fichier…" /><select id="documentProjectFilter"><option value="all">Tous les projets</option>${state.projects.map(p => `<option value="${p.id}" ${documentProjectFilter === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     <div class="documents-list">
-      ${grouped.map(({project:p,docs:list}) => `<section class="section doc-group"><h2>${esc(p.name)}</h2>${list.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('')}</section>`).join('')}
-      ${orphan.length ? `<section class="section doc-group"><h2>Sans projet</h2>${orphan.map(d => `<div class="doc-row"><span class="doc-icon doc-document">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.type || 'Document')} · ${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('')}</section>` : ''}
+      ${grouped.map(({project:p,docs:list}) => `<section class="section doc-group"><h2>${esc(p.name)}</h2>${list.map(docRow).join('')}</section>`).join('')}
+      ${orphan.length ? `<section class="section doc-group"><h2>Sans projet</h2>${orphan.map(docRow).join('')}</section>` : ''}
       ${!docs.length ? '<div class="empty-state">Aucun document trouvé.</div>' : ''}
     </div>`;
+}
+
+function renderGoogleDrivePickerModal() {
+  const current = googleDriveCurrent;
+  const rootsMode = !current;
+  const rows = rootsMode ? googleDriveRoots : googleDriveFolders;
+  return `<div class="modal-backdrop" id="googleDrivePickerBackdrop"></div><div class="modal-card google-picker-modal" role="dialog" aria-modal="true">
+    <header><div><small>GOOGLE DRIVE</small><h2>Choisir le dossier à synchroniser</h2></div><button class="icon-btn" id="closeGoogleDrivePicker">×</button></header>
+    <p class="form-note">Pilotage synchronisera uniquement le dossier choisi et ses sous-dossiers. Aucun autre dossier du Drive ne sera parcouru.</p>
+    ${current ? `<div class="folder-current"><button class="text-button" id="googleDriveBack">← Retour</button><div><small>Dossier actuel</small><strong>${esc(current.name)}</strong></div><button class="primary-btn" id="googleDriveSelectCurrent" ${googleDrivePickerBusy ? 'disabled' : ''}>Choisir ce dossier</button></div>` : '<div class="folder-current"><div><small>Emplacement</small><strong>Mes espaces Drive</strong></div></div>'}
+    <div class="folder-browser">
+      ${googleDrivePickerBusy ? '<div class="empty-line">Chargement…</div>' : rows.length ? rows.map(folder => `<button class="folder-row" data-drive-browse="${esc(folder.id)}" data-drive-name="${esc(folder.name)}" data-drive-id="${esc(folder.drive_id || current?.driveId || '')}"><span>▣</span><strong>${esc(folder.name)}</strong><small>${folder.kind === 'shared_drive' ? 'Drive partagé' : 'Dossier'}</small><b>›</b></button>`).join('') : '<div class="empty-line">Aucun sous-dossier.</div>'}
+    </div>
+    <footer><button class="secondary-btn" id="cancelGoogleDrivePicker">Annuler</button></footer>
+  </div>`;
+}
+
+function renderGoogleCalendarLinkModal(eventId) {
+  const event = state.calendarEvents.find(item => item.id === eventId);
+  if (!event) return '';
+  const tasks = state.tasks.filter(t => !event.projectId || t.projectId === event.projectId);
+  return `<div class="modal-backdrop" id="googleCalendarLinkBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
+    <header><div><small>GOOGLE AGENDA</small><h2>Associer l’événement</h2></div><button class="icon-btn" id="closeGoogleCalendarLink">×</button></header>
+    <div class="form-grid">
+      <div class="form-field form-field-full"><span>Événement</span><strong>${esc(event.title)}</strong></div>
+      <label class="form-field form-field-full"><span>Projet</span><select id="googleCalendarProject"><option value="">Sans projet</option>${state.projects.map(p => `<option value="${p.id}" ${event.projectId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Tâche (optionnel)</span><select id="googleCalendarTask"><option value="">Aucune tâche</option>${tasks.map(t => `<option value="${t.id}" ${event.taskId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>
+    </div>
+    <footer><button class="secondary-btn" id="cancelGoogleCalendarLink">Annuler</button><button class="primary-btn" id="saveGoogleCalendarLink">Enregistrer</button></footer>
+  </div>`;
 }
 
 function renderActivityItem(a) {
