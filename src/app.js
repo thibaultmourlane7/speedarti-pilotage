@@ -2265,6 +2265,192 @@ function deferTask(choice) {
 function openTeamWorkload() { teamWorkloadOpen=true; trace(TAGS.TEAM_WORKLOAD, 'Vue charge équipe ouverte'); render(); }
 function closeTeamWorkload() { teamWorkloadOpen=false; render(); }
 
+async function googleRun(label, fn) {
+  if (!window.PILOTAGE_GOOGLE) {
+    window.alert('Le module Google n’est pas chargé.');
+    return null;
+  }
+  googleBusy = label;
+  render();
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(error);
+    window.alert(error?.message || 'Action Google impossible pour le moment.');
+    return null;
+  } finally {
+    googleBusy = '';
+    render();
+  }
+}
+
+async function connectGoogle() {
+  if (!window.PILOTAGE_GOOGLE?.connect) return window.alert('Le module Google n’est pas disponible.');
+  googleBusy = 'oauth';
+  render();
+  try {
+    await window.PILOTAGE_GOOGLE.connect();
+  } catch (error) {
+    googleBusy = '';
+    render();
+    window.alert(error?.message || 'Connexion Google impossible.');
+  }
+}
+
+async function openGoogleDrivePicker() {
+  googleDrivePickerOpen = true;
+  googleDrivePickerBusy = true;
+  googleDriveRoots = [];
+  googleDriveFolders = [];
+  googleDriveCurrent = null;
+  googleDriveStack = [];
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.listDriveRoots();
+    googleDriveRoots = result?.roots || [];
+  } catch (error) {
+    googleDrivePickerOpen = false;
+    window.alert(error?.message || 'Impossible de lire Google Drive.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+function closeGoogleDrivePicker() {
+  googleDrivePickerOpen = false;
+  googleDrivePickerBusy = false;
+  googleDriveRoots = [];
+  googleDriveFolders = [];
+  googleDriveCurrent = null;
+  googleDriveStack = [];
+  render();
+}
+
+async function browseGoogleDriveFolder(folder) {
+  if (!folder?.id) return;
+  if (googleDriveCurrent) googleDriveStack.push({ ...googleDriveCurrent });
+  googleDriveCurrent = {
+    id: folder.id,
+    name: folder.name || 'Dossier',
+    driveId: folder.driveId || folder.drive_id || null,
+    kind: folder.kind || 'folder'
+  };
+  googleDrivePickerBusy = true;
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.listDriveFolder(googleDriveCurrent.id, googleDriveCurrent.driveId);
+    googleDriveFolders = (result?.folders || []).map(item => ({
+      id:item.id,
+      name:item.name,
+      driveId:item.driveId || googleDriveCurrent.driveId || null,
+      kind:'folder'
+    }));
+  } catch (error) {
+    window.alert(error?.message || 'Impossible d’ouvrir ce dossier.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+async function backGoogleDriveFolder() {
+  const previous = googleDriveStack.pop() || null;
+  if (!previous) {
+    googleDriveCurrent = null;
+    googleDriveFolders = [];
+    render();
+    return;
+  }
+  googleDriveCurrent = previous;
+  googleDrivePickerBusy = true;
+  render();
+  try {
+    const result = await window.PILOTAGE_GOOGLE.listDriveFolder(previous.id, previous.driveId);
+    googleDriveFolders = (result?.folders || []).map(item => ({ id:item.id, name:item.name, driveId:item.driveId || previous.driveId || null, kind:'folder' }));
+  } catch (error) {
+    window.alert(error?.message || 'Impossible de revenir à ce dossier.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+async function selectGoogleDriveCurrent() {
+  if (!googleDriveCurrent) return;
+  googleDrivePickerBusy = true;
+  render();
+  try {
+    await window.PILOTAGE_GOOGLE.selectDriveRoot(googleDriveCurrent.id, googleDriveCurrent.driveId);
+    googleDrivePickerOpen = false;
+    googleDriveFolders = [];
+    googleDriveCurrent = null;
+    googleDriveStack = [];
+    trace(TAGS.GOOGLE_DRIVE_PICKER, 'Dossier racine Google Drive sélectionné');
+  } catch (error) {
+    window.alert(error?.message || 'Sélection du dossier impossible.');
+  } finally {
+    googleDrivePickerBusy = false;
+    render();
+  }
+}
+
+async function syncGoogleDrive() {
+  const result = await googleRun('drive-sync', () => window.PILOTAGE_GOOGLE.syncDrive());
+  if (result?.ok) trace(TAGS.GOOGLE_DRIVE_SYNC, 'Drive synchronisé', { count:result.count || 0 });
+}
+
+async function refreshGoogleCalendars() {
+  const result = await googleRun('calendar-list', () => window.PILOTAGE_GOOGLE.listCalendars());
+  if (result?.ok) trace(TAGS.GOOGLE_CALENDAR_LIST, 'Agendas Google actualisés', { count:result.calendars?.length || 0 });
+}
+
+async function saveGoogleCalendarSelection() {
+  const sources = (state.calendarSources || []).filter(source => source.ownerId === state.currentUser.id);
+  const selections = sources.map(source => {
+    const selectedInput = document.querySelector(`[data-google-calendar-selected="${CSS.escape(source.externalCalendarId)}"]`);
+    const sharedInput = document.querySelector(`[data-google-calendar-shared="${CSS.escape(source.externalCalendarId)}"]`);
+    return {
+      external_calendar_id: source.externalCalendarId,
+      selected: Boolean(selectedInput?.checked),
+      shared_with_team: Boolean(sharedInput?.checked)
+    };
+  });
+  const result = await googleRun('calendar-save', () => window.PILOTAGE_GOOGLE.setCalendarSelection(selections));
+  if (result?.ok) trace(TAGS.GOOGLE_CALENDAR_SELECTION, 'Sélection Agenda enregistrée', { count:selections.filter(x => x.selected).length });
+}
+
+async function syncGoogleCalendars() {
+  const result = await googleRun('calendar-sync', () => window.PILOTAGE_GOOGLE.syncCalendars());
+  if (result?.ok) trace(TAGS.GOOGLE_CALENDAR_SYNC, 'Agendas Google synchronisés', { count:result.count || 0 });
+}
+
+async function linkDriveItemToProject(itemId, projectClientKey) {
+  const result = await googleRun('drive-link', () => window.PILOTAGE_GOOGLE.linkDriveItem(itemId, projectClientKey || null));
+  if (result?.ok) trace(TAGS.GOOGLE_DRIVE_PROJECT_LINK, 'Fichier Drive rattaché', { itemId, projectClientKey:projectClientKey || null });
+}
+
+function openGoogleCalendarLink(eventId) {
+  googleCalendarLinkEventId = eventId;
+  render();
+}
+function closeGoogleCalendarLink() {
+  googleCalendarLinkEventId = null;
+  render();
+}
+async function saveGoogleCalendarLink() {
+  const event = state.calendarEvents.find(item => item.id === googleCalendarLinkEventId);
+  if (!event) return closeGoogleCalendarLink();
+  const projectId = document.querySelector('#googleCalendarProject')?.value || null;
+  const taskId = document.querySelector('#googleCalendarTask')?.value || null;
+  const result = await googleRun('calendar-link', () => window.PILOTAGE_GOOGLE.linkCalendarEvent(event.id, projectId, taskId));
+  if (result?.ok) {
+    trace(TAGS.GOOGLE_CALENDAR_PROJECT_LINK, 'Événement Agenda rattaché', { eventId:event.id, projectId, taskId });
+    googleCalendarLinkEventId = null;
+    render();
+  }
+}
+
 function bindEvents() {
   document.querySelector('#assistantSend')?.addEventListener('click', () => sendAssistantMessage());
   document.querySelector('#assistantInput')?.addEventListener('keydown', e => {
