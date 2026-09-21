@@ -27,4 +27,4 @@ Connecter Pilotage à Google sans modifier les fonctions déjà validées. La V1
 
 Les jetons Google ne doivent jamais être stockés dans le navigateur ou GitHub. Ils sont chiffrés côté Edge Function avec `GOOGLE_TOKEN_ENCRYPTION_KEY`. La table `google_credentials` n'a aucune politique RLS d'accès direct côté client.
 
-Balises principales : `PILOT-GOOGLE-001` à `PILOT-GOOGLE-012`.
+Balises principales : `PILOT-GOOGLE-001` à `PILOT-GOOGLE-010`.
