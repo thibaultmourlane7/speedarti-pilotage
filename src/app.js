@@ -36,6 +36,16 @@ let dailyReportDate = currentDateKey();
 let dailyReportPersonFilter = 'all';
 let dailyReportPresetPersonId = null;
 
+// PILOT-GOOGLE-004 / 009 — sélecteur Drive et association Agenda.
+let googleDrivePickerOpen = false;
+let googleDrivePickerBusy = false;
+let googleDriveRoots = [];
+let googleDriveFolders = [];
+let googleDriveCurrent = null;
+let googleDriveStack = [];
+let googleBusy = '';
+let googleCalendarLinkEventId = null;
+
 // PILOT-AI-018 / PILOT-UI-043 — assistant ChatGPT Pilotage réel.
 let assistantMessages = [];
 let assistantLoading = false;
@@ -48,6 +58,10 @@ state.changeRequests = Array.isArray(state.changeRequests) ? state.changeRequest
 state.aiRequests = Array.isArray(state.aiRequests) ? state.aiRequests : [];
 state.aiEvents = Array.isArray(state.aiEvents) ? state.aiEvents : [];
 state.dailyReports = Array.isArray(state.dailyReports) ? state.dailyReports : [];
+state.integrations = Array.isArray(state.integrations) ? state.integrations : [];
+state.driveItems = Array.isArray(state.driveItems) ? state.driveItems : [];
+state.calendarSources = Array.isArray(state.calendarSources) ? state.calendarSources : [];
+state.calendarEvents = Array.isArray(state.calendarEvents) ? state.calendarEvents : [];
 // PILOT-UI-040 — toutes les dates opérationnelles utilisent désormais l’horloge réelle de l’appareil.
 
 const app = document.querySelector('#app');
@@ -133,6 +147,30 @@ function esc(value = '') {
 function teamName(id) { return state.team.find(x => x.id === id)?.name || 'Non attribué'; }
 function project(id) { return state.projects.find(x => x.id === id); }
 function task(id) { return state.tasks.find(x => x.id === id); }
+function integration(provider, ownerId = state.currentUser.id) {
+  return (state.integrations || []).find(x => x.provider === provider && x.ownerId === ownerId) || null;
+}
+function driveDocumentRefs() {
+  return (state.driveItems || []).filter(item => !item.isFolder).map(item => ({
+    id:`drive-${item.id}`,
+    driveItemId:item.id,
+    projectId:item.projectId || null,
+    name:item.name,
+    type:item.mimeType?.includes('spreadsheet') ? 'Tableur' : item.mimeType === 'application/pdf' ? 'PDF' : 'Document',
+    source:'Google Drive · synchronisé',
+    url:item.url || '',
+    externalFileId:item.externalFileId,
+    relativePath:item.relativePath || item.name,
+    ownerId:item.ownerId,
+    lastSyncedAt:item.lastSyncedAt || null
+  }));
+}
+function allDocumentRefs() { return [...(state.documents || []), ...driveDocumentRefs()]; }
+function formatSyncDate(value) {
+  if (!value) return 'Jamais synchronisé';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? 'Synchronisation inconnue' : `Synchro ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`;
+}
 
 function formatTime(iso) { return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
 function formatDate(iso) { return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }); }
