@@ -990,3 +990,14 @@ button { cursor: pointer; }
   .google-integration-actions button{flex:1}
   .drive-project-select{max-width:100%}
 }
+
+
+.drive-sync-progress{
+  border:1px solid #bfdbfe;
+  background:#eff6ff;
+  color:#1d4ed8;
+  border-radius:10px;
+  padding:10px 12px;
+  font-size:13px;
+  font-weight:600;
+}
