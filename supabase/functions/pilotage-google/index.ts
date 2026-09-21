@@ -142,6 +142,11 @@ async function getAccessToken(db: ReturnType<typeof dbClient>, memberId: string)
   }).eq("owner_member_id", memberId);
   return tokenData.access_token as string;
 }
+function ignoredDrivePath(path: string) {
+  const normalized = `/${String(path || "").replaceAll("\\", "/").toLowerCase()}/`;
+  return normalized.includes("/node_modules/");
+}
+
 async function googleFetch(token: string, url: string, init: RequestInit = {}) {
   const resp = await fetch(url, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
   const data = await resp.json().catch(() => ({}));
@@ -334,16 +339,19 @@ Deno.serve(async (req: Request) => {
 
       const driveId = config.drive_id || null;
       const storedCursor = config.drive_sync_cursor || null;
-      const cursor = storedCursor && storedCursor.root_id === rootId
+      const SYNC_VERSION = 2;
+      const cursor = storedCursor && storedCursor.root_id === rootId && storedCursor.version === SYNC_VERSION
         ? {
+            version: SYNC_VERSION,
             root_id: rootId,
             run_id: storedCursor.run_id || crypto.randomUUID(),
-            queue: Array.isArray(storedCursor.queue) ? storedCursor.queue : [],
-            current: storedCursor.current || null,
+            queue: (Array.isArray(storedCursor.queue) ? storedCursor.queue : []).filter((item: any) => !ignoredDrivePath(item?.path || "")),
+            current: storedCursor.current && !ignoredDrivePath(storedCursor.current?.path || "") ? storedCursor.current : null,
             page_token: storedCursor.page_token || "",
             total: Number(storedCursor.total || 0),
           }
         : {
+            version: SYNC_VERSION,
             root_id: rootId,
             run_id: crypto.randomUUID(),
             queue: [{ id: rootId, path: "" }],
@@ -403,7 +411,7 @@ Deno.serve(async (req: Request) => {
             last_synced_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           });
-          if (isFolder && config.include_subfolders !== false) {
+          if (isFolder && config.include_subfolders !== false && !ignoredDrivePath(relativePath)) {
             cursor.queue.push({ id: file.id, path: relativePath });
           }
         }
