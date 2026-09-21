@@ -297,8 +297,8 @@
 
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = './src/app.bundle.js';
-      script.defer = true;
+      script.src = './src/app.js';
+      script.type = 'module';
       script.dataset.pilotageApp = 'true';
 
       script.addEventListener('load', () => {
