@@ -163,3 +163,17 @@ Toutes les balises V1 à V11 déjà présentes restent réservées à leur fonct
 - Claude doit utiliser `listPilotageContext` avant de renseigner un identifiant de projet ou de tâche.
 - `reportPilotageEvent` réutilise la passerelle V16 `pilotage-ai-ingest` et ses contrôles métier.
 - La connexion Claude reste à valider depuis le compte d’Anne-Sophie après ajout du connecteur.
+
+
+## V18 — Google Drive & Google Agenda
+
+- `PILOT-GOOGLE-001` — Fondation Google Drive / Agenda
+- `PILOT-GOOGLE-002` — Appel API du connecteur Google
+- `PILOT-GOOGLE-003` — OAuth Google par membre
+- `PILOT-GOOGLE-004` — Sélection du dossier racine Drive
+- `PILOT-GOOGLE-005` — Synchronisation Drive
+- `PILOT-GOOGLE-006` — Liaison fichier Drive / projet
+- `PILOT-GOOGLE-007` — Liste des agendas accessibles
+- `PILOT-GOOGLE-008` — Synchronisation Google Agenda
+- `PILOT-GOOGLE-009` — Liaison événement / Pilotage
+- `PILOT-GOOGLE-010` — Sécurité jetons OAuth / droits
