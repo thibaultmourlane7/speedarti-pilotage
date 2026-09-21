@@ -80,7 +80,7 @@
       await refreshPilotage();
       return r;
     },
-    syncDrive: async () => {
+    syncDrive: async (onProgress = null) => {
       trace(TAGS.DRIVE_SYNC, 'Synchronisation Drive demandée');
       let result = null;
       let total = 0;
@@ -90,13 +90,15 @@
         result = await invoke('sync_drive');
         total = Number(result?.total ?? (total + Number(result?.count || 0)));
         rounds += 1;
-        trace(TAGS.DRIVE_SYNC, 'Lot Drive synchronisé', {
+        const progress = {
           round: rounds,
           batch: Number(result?.count || 0),
           total,
           done: result?.done !== false,
           remainingFolders: Number(result?.remaining_folders || 0)
-        });
+        };
+        trace(TAGS.DRIVE_SYNC, 'Lot Drive synchronisé', progress);
+        if (typeof onProgress === 'function') onProgress(progress);
 
         if (result?.done === false) {
           await new Promise(resolve => setTimeout(resolve, 80));
