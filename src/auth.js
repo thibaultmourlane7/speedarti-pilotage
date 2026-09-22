@@ -24,6 +24,9 @@
   let uiObserver = null;
   let uiPatchScheduled = false;
 
+  // PILOT-MCP-OAUTH-001 — demande OAuth transmise par Supabase Auth pour ChatGPT.
+  const oauthAuthorizationId = new URLSearchParams(window.location.search).get('authorization_id');
+
   function trace(tag, message, details = {}) {
     console.debug(`[${tag}] ${message}`, details);
   }
@@ -156,6 +159,95 @@
     email?.focus();
   }
 
+  async function renderOAuthConsent() {
+    if (!oauthAuthorizationId) return false;
+
+    renderLoading('Préparation de l’autorisation ChatGPT…');
+
+    const oauthApi = client?.auth?.oauth;
+    if (!oauthApi?.getAuthorizationDetails || !oauthApi?.approveAuthorization || !oauthApi?.denyAuthorization) {
+      throw new Error('Le module OAuth Supabase requis pour ChatGPT n’est pas disponible.');
+    }
+
+    const { data: details, error } = await oauthApi.getAuthorizationDetails(oauthAuthorizationId);
+    if (error) throw error;
+    if (!details) throw new Error('Demande d’autorisation ChatGPT introuvable ou expirée.');
+
+    // Supabase peut renvoyer directement une URL si ce consentement a déjà été accordé.
+    if (!('authorization_id' in details) && details.redirect_url) {
+      window.location.assign(details.redirect_url);
+      return true;
+    }
+
+    const authorizationId = details.authorization_id || oauthAuthorizationId;
+    const clientName = details?.client?.name || details?.client_name || 'ChatGPT';
+    const scopes = String(details?.scope || '')
+      .split(/\s+/)
+      .map(value => value.trim())
+      .filter(Boolean);
+
+    authRoot.hidden = false;
+    appRoot.hidden = true;
+    authRoot.innerHTML = `
+      <main class="auth-shell">
+        <section class="auth-card">
+          <div class="auth-brand"><span>S</span><div><strong>SpeedArti</strong><small>Pilotage d’entreprise</small></div></div>
+          <div class="auth-heading">
+            <span class="auth-kicker">CONNEXION CHATGPT</span>
+            <h1>Autoriser ${htmlEscape(clientName)}</h1>
+            <p>Compte Pilotage : <strong>${htmlEscape(activeMember?.display_name || '')}</strong></p>
+          </div>
+          <div class="auth-security">
+            <span>✓</span>
+            <p>Cette première connexion autorise uniquement la lecture du profil, des projets et des tâches auxquels ce compte Pilotage a déjà accès.</p>
+          </div>
+          ${scopes.length ? `<div class="auth-account-local">Autorisation demandée : ${scopes.map(htmlEscape).join(', ')}</div>` : ''}
+          <div class="auth-form">
+            <button id="pilotageOauthApprove" class="auth-primary" type="button">Autoriser ChatGPT</button>
+            <button id="pilotageOauthDeny" class="auth-secondary" type="button">Refuser</button>
+          </div>
+        </section>
+      </main>`;
+
+    const approve = document.querySelector('#pilotageOauthApprove');
+    const deny = document.querySelector('#pilotageOauthDeny');
+
+    approve?.addEventListener('click', async () => {
+      approve.disabled = true;
+      if (deny) deny.disabled = true;
+      try {
+        const { data, error: approveError } = await oauthApi.approveAuthorization(authorizationId);
+        if (approveError) throw approveError;
+        if (!data?.redirect_url) throw new Error('URL de retour ChatGPT absente.');
+        window.location.assign(data.redirect_url);
+      } catch (approveError) {
+        showError(approveError.message || 'Autorisation impossible.');
+        approve.disabled = false;
+        if (deny) deny.disabled = false;
+      }
+    });
+
+    deny?.addEventListener('click', async () => {
+      approve.disabled = true;
+      if (deny) deny.disabled = true;
+      try {
+        const { data, error: denyError } = await oauthApi.denyAuthorization(authorizationId);
+        if (denyError) throw denyError;
+        if (!data?.redirect_url) throw new Error('URL de retour ChatGPT absente.');
+        window.location.assign(data.redirect_url);
+      } catch (denyError) {
+        showError(denyError.message || 'Refus impossible.');
+        approve.disabled = false;
+        if (deny) deny.disabled = false;
+      }
+    });
+
+    trace(TAGS.AUTH_SESSION, 'Consentement OAuth ChatGPT affiché', {
+      member: activeMember?.client_key || null
+    });
+    return true;
+  }
+
   function showError(message) {
     let box = document.querySelector('.auth-message');
     if (!box) {
@@ -255,6 +347,11 @@
         member: { ...member }
       });
       window.PILOTAGE_SUPABASE_CLIENT = client;
+
+      if (oauthAuthorizationId) {
+        await renderOAuthConsent();
+        return;
+      }
 
       trace(TAGS.AUTH_PROFILE, 'Identité Pilotage chargée', {
         member: member.client_key,
