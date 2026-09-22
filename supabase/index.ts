@@ -77,7 +77,7 @@ function unauthorized(req: Request, id: unknown = null, description?: string) {
   });
 }
 
-async function sha256Hexasync function sha256Hex(value: string) {
+async function sha256Hex(value: string) {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -274,7 +274,7 @@ function toolsCatalog(auth: any) {
   return tools;
 }
 
-async function listContextasync function listContext(db: any, auth: any, args: any) {
+async function listContext(db: any, auth: any, args: any) {
   const includeCompleted = args?.include_completed === true;
   let projectIds: string[] = [];
 
