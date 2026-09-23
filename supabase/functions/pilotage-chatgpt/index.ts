@@ -338,6 +338,9 @@ async function main(req: Request) {
     task_client_key: idea.task_client_key || null,
     converted_task_client_key: idea.converted_task_client_key || null,
     vote_count: Number(idea.vote_count || 0),
+    like_count: Number(idea.like_count || 0),
+    dislike_count: Number(idea.dislike_count || 0),
+    neutral_count: Number(idea.neutral_count || 0),
     vote_threshold: Number(idea.vote_threshold || 1),
     comment_count: Number(idea.comment_count || 0),
     updated_at: idea.updated_at
@@ -381,7 +384,7 @@ async function main(req: Request) {
     "Si une donnée nécessaire manque, pose une question courte au lieu de deviner.",
     "Les mises à jour de routine peuvent utiliser les outils. La clôture d'un projet doit TOUJOURS utiliser request_project_completion, jamais update_project.",
     "Ne modifie jamais les participants d'un projet, les rôles utilisateurs, les accès, ni les validations finales.",
-    "Les idées sont des signaux de roadmap : tu peux les lire, les comparer et les signaler, mais tu ne dois jamais les valider, les rejeter, changer leur statut ni les transformer en tâche automatiquement.",
+    "Les idées sont des signaux de roadmap : tu peux les lire, les comparer et les signaler, mais tu ne dois jamais les valider, les rejeter, changer leur statut ni les transformer en tâche automatiquement. Les votes ont trois positions (J’aime, J’aime pas, neutre) et seuls les J’aime comptent pour le seuil automatique À étudier.",
     "Pour les comptes rendus, crée seulement un brouillon pour l'utilisateur connecté.",
     "Réponds en français, de façon courte et opérationnelle.",
     "Quand tu exécutes une action, indique clairement ce qui a été fait.",
