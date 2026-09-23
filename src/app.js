@@ -674,6 +674,11 @@ async function moveProjectInTree(projectId, { parentId = null, beforeId = null }
     return;
   }
 
+  const pageBeforeMove = currentPage;
+  const selectedBeforeMove = selectedProjectId;
+  const tabBeforeMove = projectDetailTab;
+  const filterBeforeMove = projectFilter;
+
   projectTreeMoveBusy = true;
   render();
 
@@ -686,8 +691,19 @@ async function moveProjectInTree(projectId, { parentId = null, beforeId = null }
     });
     if (error) throw new Error(error.message || 'Déplacement impossible');
 
-    // La base recalcule aussi la progression de tous les parents concernés.
-    await window.PILOTAGE_REMOTE?.refreshFromSupabase?.();
+    // Recharge les données calculées par Supabase sans recharger toute l'application.
+    const refreshed = await window.PILOTAGE_REMOTE?.refreshFromSupabase?.({ reload:false });
+    if (refreshed) {
+      state = refreshed;
+      ensureRuntimeState();
+    }
+
+    projectTreeMoveBusy = false;
+    currentPage = pageBeforeMove || 'projects';
+    projectFilter = filterBeforeMove;
+    projectDetailTab = tabBeforeMove;
+    selectedProjectId = selectedBeforeMove && project(selectedBeforeMove) ? selectedBeforeMove : null;
+    render();
   } catch (error) {
     projectTreeMoveBusy = false;
     window.alert(error?.message || 'Le projet n’a pas pu être déplacé.');
