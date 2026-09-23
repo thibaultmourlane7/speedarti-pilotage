@@ -889,7 +889,7 @@ function renderToday() {
         : `
           <div class="section-title"><h2>Mes projets accessibles</h2><button class="text-button" data-page="projects">Voir les projets →</button></div>
           <div class="team-list">
-            ${state.projects.filter(p => !p.archived).slice(0,4).map(p => `<button class="team-row team-row-button" data-project="${p.id}"><div><strong>${esc(p.name)}</strong><small>${p.owner === state.currentUser.id ? 'Responsable' : 'Participant'} · ${projectMemberIds(p).length} membre${projectMemberIds(p).length > 1 ? 's' : ''}</small></div><span>${p.progress} % →</span></button>`).join('') || '<div class="empty-line">Aucun projet accessible.</div>'}
+            ${state.projects.filter(p => !p.archived).slice(0,4).map(p => `<button class="team-row team-row-button" data-project="${p.id}"><div><strong>${esc(p.name)}</strong><small>${p.owner === state.currentUser.id ? 'Responsable' : 'Participant'} · ${projectMemberIds(p).length} membre${projectMemberIds(p).length > 1 ? 's' : ''}</small></div><span>${projectEffectiveProgress(p)} % →</span></button>`).join('') || '<div class="empty-line">Aucun projet accessible.</div>'}
           </div>`}
       </div>
     </section>
@@ -2031,7 +2031,7 @@ function renderApprovalModal(requestId) {
   if (!request || !p) return '';
   return `<div class="modal-backdrop" id="approvalBackdrop"></div><div class="modal-card approval-modal" role="dialog" aria-modal="true">
     <header><div><small>VALIDATION HUMAINE</small><h2>Passer le projet en Terminé ?</h2></div><button class="icon-btn" id="closeApproval">×</button></header>
-    <div class="approval-project"><span class="status-dot status-${p.status}"></span><div><strong>${esc(p.name)}</strong><small>État actuel : ${esc(statusLabels[p.status])} · ${p.progress} %</small></div></div>
+    <div class="approval-project"><span class="status-dot status-${p.status}"></span><div><strong>${esc(p.name)}</strong><small>État actuel : ${esc(statusLabels[p.status])} · ${projectEffectiveProgress(p)} %${projectHasChildren(p.id) ? ' · automatique' : ''}</small></div></div>
     <div class="approval-summary"><div><small>Demandé par</small><strong>${esc(memberLabel(request.requestedByMemberId || request.requestedBy))}</strong></div><div><small>Action proposée</small><strong>Terminé · 100 %</strong></div></div>
     ${request.note ? `<p class="approval-note">${esc(request.note)}</p>` : ''}
     <p class="form-note">La progression peut évoluer automatiquement, mais le passage officiel du projet en <strong>Terminé</strong> demande une décision humaine.</p>
@@ -2325,7 +2325,10 @@ function decideApproval(requestId, approved) {
   request.decidedBy = state.currentUser.id;
   if (approved) {
     p.status = 'completed';
-    p.progress = 100;
+    if (!projectHasChildren(p.id)) {
+      p.progress = 100;
+      p.manualProgress = 100;
+    }
     p.blocker = '';
     p.nextAction = 'Projet clôturé';
     p.updatedAt = new Date().toISOString();
@@ -2754,9 +2757,15 @@ function simulateAiIncoming() {
 
   if (mode === 'routine_progress') {
     const p = project(projectId); if (!p) return;
+    if (projectHasChildren(p.id)) {
+      window.alert('La progression de ce projet est automatique car il contient des sous-projets.');
+      return;
+    }
     const previous = Number(p.progress || 0);
     const next = Math.max(0, Math.min(100, Number(document.querySelector('#aiProgress')?.value || previous)));
-    p.progress = next; p.updatedAt = new Date().toISOString();
+    p.progress = next;
+    p.manualProgress = next;
+    p.updatedAt = new Date().toISOString();
     addActivity({ actor, projectId, text:`Progression : ${previous} % → ${next} %`, internalTag:TAGS.AI_ROUTINE_UPDATE });
     persist(TAGS.AI_ROUTINE_UPDATE, 'Progression IA appliquée automatiquement', { source, projectId, previous, next });
     aiSimulationOpen = false; selectedProjectId = projectId; currentPage = 'projects'; render(); return;
