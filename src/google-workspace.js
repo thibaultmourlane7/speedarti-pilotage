@@ -110,9 +110,20 @@
     return window.PILOTAGE_GOOGLE;
   }
 
+  function chatApi() {
+    if (!window.PILOTAGE_CHAT) throw new Error('Chat SpeedArti indisponible.');
+    return window.PILOTAGE_CHAT;
+  }
+
   function isReady() {
     const app = document.querySelector('#app');
-    return Boolean(window.PILOTAGE_AUTH?.member?.id && window.PILOTAGE_GOOGLE && app && !app.hidden);
+    return Boolean(
+      window.PILOTAGE_AUTH?.member?.id
+      && window.PILOTAGE_GOOGLE
+      && window.PILOTAGE_CHAT
+      && app
+      && !app.hidden
+    );
   }
 
   function ensureRoot() {
@@ -139,7 +150,7 @@
       <div class="gw-empty-card">
         <div class="gw-empty-icon">G</div>
         <strong>Google n’est pas connecté</strong>
-        <p>Connecte ton compte Google pour utiliser Chat, Agenda et Meet dans Pilotage.</p>
+        <p>Connecte ton compte Google pour utiliser Agenda et Meet dans Pilotage. Le Chat SpeedArti fonctionne indépendamment.</p>
         <button class="gw-primary" data-gw-action="connect-google">Connecter Google</button>
       </div>`;
   }
@@ -170,49 +181,37 @@
   }
 
   function renderSpaces() {
-    if (!ui.status?.account) return disconnectedCard();
-    if (ui.status?.needs_reconnect) return reconnectCard('Chat et Meet');
     if (ui.chatError) {
       return `
         <div class="gw-error-card">
-          <strong>Google Chat indisponible</strong>
+          <strong>Chat SpeedArti indisponible</strong>
           <p>${esc(ui.chatError)}</p>
-          <div class="gw-inline-actions">
-            <button class="gw-secondary" data-gw-action="sync-chat">Réessayer</button>
-            <button class="gw-secondary" data-gw-action="connect-google">Reconnecter Google</button>
-          </div>
+          <button class="gw-secondary" data-gw-action="sync-chat">Réessayer</button>
         </div>`;
     }
     if (ui.loading === 'chat' && !ui.spaces.length) {
-      return '<div class="gw-loading">Synchronisation Google Chat…</div>';
-    }
-    if (!ui.spaces.length) {
-      return `
-        <div class="gw-empty-card">
-          <strong>Aucune conversation chargée</strong>
-          <p>Actualise Google Chat pour récupérer les espaces accessibles à ce compte.</p>
-          <button class="gw-primary" data-gw-action="sync-chat">Actualiser Chat</button>
-        </div>`;
+      return '<div class="gw-loading">Chargement du Chat SpeedArti…</div>';
     }
 
     return `
       <div class="gw-chat-tools">
-        <span>${ui.spaces.length} espace${ui.spaces.length > 1 ? 's' : ''}</span>
-        <button class="gw-icon-button" data-gw-action="sync-chat" title="Actualiser">↻</button>
+        <span>${ui.spaces.length} salon${ui.spaces.length > 1 ? 's' : ''}</span>
+        <span class="gw-inline-actions">
+          <button class="gw-secondary small" data-gw-action="open-chat-room">+ Salon</button>
+          <button class="gw-icon-button" data-gw-action="sync-chat" title="Actualiser">↻</button>
+        </span>
       </div>
       <div class="gw-space-list">
-        ${ui.spaces.map(space => {
-          const pname = space.project_client_key ? projectName(space.project_client_key) : '';
-          return `
-            <button class="gw-space-row" data-gw-space="${esc(space.id)}">
-              <span class="gw-space-avatar">${space.space_type === 'DIRECT_MESSAGE' ? '👤' : '👥'}</span>
-              <span class="gw-space-copy">
-                <strong>${esc(space.display_name || 'Google Chat')}</strong>
-                <small>${pname ? esc(pname) : (space.space_type === 'DIRECT_MESSAGE' ? 'Message direct' : 'Espace Google Chat')}</small>
-              </span>
-              ${Number(space.unread_count || 0) ? `<b class="gw-unread">${Number(space.unread_count)}</b>` : ''}
-            </button>`;
-        }).join('')}
+        ${ui.spaces.length ? ui.spaces.map(space => `
+          <button class="gw-space-row" data-gw-space="${esc(space.id)}">
+            <span class="gw-space-avatar">${space.room_type === 'project' ? '▦' : '👥'}</span>
+            <span class="gw-space-copy">
+              <strong>${esc(space.display_name || 'Chat SpeedArti')}</strong>
+              <small>${space.project_name ? esc(space.project_name) : esc(space.last_message_preview || 'Équipe SpeedArti')}</small>
+            </span>
+            ${Number(space.unread_count || 0) ? `<b class="gw-unread">${Number(space.unread_count)}</b>` : ''}
+          </button>
+        `).join('') : '<div class="gw-empty-line">Aucun salon disponible.</div>'}
       </div>`;
   }
 
@@ -222,39 +221,51 @@
       ui.chatView = 'spaces';
       return renderSpaces();
     }
-    const projectValue = space.project_client_key || '';
     return `
       <div class="gw-conversation">
         <div class="gw-conversation-head">
           <button class="gw-icon-button" data-gw-action="back-spaces">←</button>
-          <div><strong>${esc(space.display_name || 'Google Chat')}</strong><small>Google Chat</small></div>
+          <div>
+            <strong>${esc(space.display_name || 'Chat SpeedArti')}</strong>
+            <small>${space.project_name ? `Projet · ${esc(space.project_name)}` : 'Chat interne SpeedArti'}</small>
+          </div>
           <button class="gw-icon-button" data-gw-action="sync-current" title="Actualiser">↻</button>
         </div>
-        <label class="gw-project-link">
-          <span>Projet lié</span>
-          <select id="gwChatProject">
-            <option value="">Sans projet</option>
-            ${projects().map(p => `<option value="${esc(p.id)}" ${p.id === projectValue ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
-          </select>
-        </label>
         <div class="gw-message-list" id="gwMessageList">
           ${ui.messages.length ? ui.messages.map(m => {
-            const own = currentMember()?.display_name && m.sender_display_name === currentMember().display_name;
+            const own = m.sender_member_id === currentMember()?.id;
             return `
               <article class="gw-message ${own ? 'is-own' : ''}">
-                <div class="gw-message-meta"><strong>${esc(m.sender_display_name || 'Google Chat')}</strong><time>${esc(formatDateTime(m.create_time))}</time></div>
-                <p>${esc(m.text || '')}</p>
+                <div class="gw-message-meta"><strong>${esc(m.sender_display_name || 'Équipe')}</strong><time>${esc(formatDateTime(m.created_at))}</time></div>
+                <p>${esc(m.body || '')}</p>
               </article>`;
-          }).join('') : '<div class="gw-empty-line">Aucun message chargé.</div>'}
+          }).join('') : '<div class="gw-empty-line">Aucun message pour le moment.</div>'}
         </div>
         <form id="gwSendForm" class="gw-compose">
-          <textarea id="gwSendText" rows="2" maxlength="32000" placeholder="Écrire un message…" required></textarea>
+          <textarea id="gwSendText" rows="2" maxlength="10000" placeholder="Écrire un message…" required></textarea>
           <button class="gw-primary" type="submit" ${ui.loading === 'send' ? 'disabled' : ''}>${ui.loading === 'send' ? '…' : 'Envoyer'}</button>
         </form>
       </div>`;
   }
 
+  function renderChatRoomForm() {
+    return `
+      <form id="gwCreateChatRoomForm" class="gw-form">
+        <div class="gw-form-head"><strong>Nouveau salon</strong><button type="button" class="gw-icon-button" data-gw-action="close-chat-room">×</button></div>
+        <label><span>Nom du salon</span><input id="gwChatRoomName" required maxlength="120" placeholder="Ex. Configurateur terrasse" /></label>
+        <label><span>Projet lié (optionnel)</span>
+          <select id="gwChatRoomProject">
+            <option value="">Équipe générale</option>
+            ${projects().map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}
+          </select>
+        </label>
+        <p class="gw-meeting-desc">Avec un projet, les membres déjà affectés à ce projet sont ajoutés au salon. Sans projet, le salon est accessible à l’équipe active.</p>
+        <button class="gw-primary" type="submit" ${ui.loading === 'create-room' ? 'disabled' : ''}>${ui.loading === 'create-room' ? 'Création…' : 'Créer le salon'}</button>
+      </form>`;
+  }
+
   function renderChat() {
+    if (ui.form === 'chat-room') return renderChatRoomForm();
     return ui.chatView === 'conversation' ? renderConversation() : renderSpaces();
   }
 
@@ -370,9 +381,9 @@
     const chatCount = chatBadge();
     const meetCount = actionableRequests().length;
     return `
-      <section class="gw-panel" role="dialog" aria-label="Google Chat et réunions">
+      <section class="gw-panel" role="dialog" aria-label="Chat SpeedArti et réunions">
         <header class="gw-header">
-          <div class="gw-brand"><span>G</span><div><strong>Communication</strong><small>SpeedArti Pilotage</small></div></div>
+          <div class="gw-brand"><span>S</span><div><strong>Communication</strong><small>Chat interne + Google Meet</small></div></div>
           <button class="gw-icon-button" data-gw-action="toggle" aria-label="Réduire">—</button>
         </header>
         <nav class="gw-tabs">
@@ -406,7 +417,6 @@
     try {
       ui.status = await api().status();
       ui.meetError = '';
-      if (ui.status?.needs_reconnect) ui.chatError = '';
     } catch (error) {
       ui.status = null;
       ui.meetError = error?.message || 'Impossible de lire la connexion Google.';
@@ -414,34 +424,34 @@
     render();
   }
 
-  function normalizeSpaces(spaces) {
-    return (spaces || []).map(s => ({
-      ...s,
-      project_client_key: s.project_client_key || null
-    }));
-  }
-
   async function syncChat(background = false) {
-    if (ui.syncingChat || !ui.status?.account || ui.status?.needs_reconnect) return;
+    if (ui.syncingChat) return;
     ui.syncingChat = true;
     if (!background) ui.loading = 'chat';
     if (!background) render();
     try {
-      const result = await api().syncChat();
-      ui.spaces = normalizeSpaces(result?.spaces || []);
+      const rows = await chatApi().listRooms();
+      ui.spaces = rows.map(row => ({
+        id: row.room_id,
+        client_key: row.client_key,
+        display_name: row.room_name,
+        room_type: row.room_type,
+        project_id: row.project_id,
+        project_client_key: row.project_client_key,
+        project_name: row.project_name,
+        unread_count: Number(row.unread_count || 0),
+        last_message_at: row.last_message_at,
+        last_message_preview: row.last_message_preview || ''
+      }));
       ui.chatError = '';
-      if (background && Number(result?.new_messages || 0) > 0) {
-        notification(
-          'Nouveau message Google Chat',
-          `${Number(result.new_messages)} nouveau${Number(result.new_messages) > 1 ? 'x' : ''} message${Number(result.new_messages) > 1 ? 's' : ''}.`
-        );
+      if (ui.selectedSpaceId && !ui.spaces.some(x => x.id === ui.selectedSpaceId)) {
+        ui.selectedSpaceId = null;
+        ui.chatView = 'spaces';
+        ui.messages = [];
       }
       if (ui.selectedSpaceId) await loadMessages(ui.selectedSpaceId, false);
     } catch (error) {
-      const message = error?.message || 'Synchronisation Google Chat impossible.';
-      ui.chatError = /403|forbidden|not enabled|disabled|workspace/i.test(message)
-        ? `${message} Vérifie que Google Chat API est activée et que le compte Google autorise l’API Chat.`
-        : message;
+      ui.chatError = error?.message || 'Chargement du Chat SpeedArti impossible.';
     } finally {
       ui.syncingChat = false;
       if (ui.loading === 'chat') ui.loading = '';
@@ -451,10 +461,9 @@
 
   async function loadMessages(spaceId, markSeen = true) {
     try {
-      const result = await api().listChatMessages(spaceId);
-      ui.messages = result?.messages || [];
+      ui.messages = await chatApi().listMessages(spaceId, 100);
       if (markSeen) {
-        await api().markChatSpaceSeen(spaceId);
+        await chatApi().markRead(spaceId);
         const space = ui.spaces.find(s => s.id === spaceId);
         if (space) space.unread_count = 0;
       }
@@ -468,9 +477,31 @@
   async function openSpace(spaceId) {
     ui.selectedSpaceId = spaceId;
     ui.chatView = 'conversation';
+    ui.form = null;
     ui.messages = [];
     render();
     await loadMessages(spaceId, true);
+  }
+
+  async function createChatRoom(event) {
+    event.preventDefault();
+    const name = document.querySelector('#gwChatRoomName')?.value?.trim() || '';
+    const projectClientKey = document.querySelector('#gwChatRoomProject')?.value || null;
+    if (!name) return;
+    ui.loading = 'create-room';
+    render();
+    try {
+      const roomId = await chatApi().createRoom(name, projectClientKey);
+      ui.form = null;
+      await syncChat(true);
+      if (roomId) await openSpace(roomId);
+      showToast('Salon créé', projectClientKey ? 'Salon projet prêt.' : 'Salon équipe prêt.');
+    } catch (error) {
+      showToast('Création impossible', error?.message || 'Erreur du Chat SpeedArti.');
+    } finally {
+      ui.loading = '';
+      render();
+    }
   }
 
   async function refreshMeetings(background = false) {
@@ -504,26 +535,14 @@
     ui.loading = 'send';
     render();
     try {
-      await api().sendChatMessage(ui.selectedSpaceId, text);
-      await syncChat(true);
+      await chatApi().sendMessage(ui.selectedSpaceId, text);
       await loadMessages(ui.selectedSpaceId, true);
+      await syncChat(true);
     } catch (error) {
-      showToast('Message non envoyé', error?.message || 'Erreur Google Chat.');
+      showToast('Message non envoyé', error?.message || 'Erreur du Chat SpeedArti.');
     } finally {
       ui.loading = '';
       render();
-    }
-  }
-
-  async function linkProject(value) {
-    if (!ui.selectedSpaceId) return;
-    try {
-      await api().linkChatSpaceProject(ui.selectedSpaceId, value || null);
-      const space = ui.spaces.find(s => s.id === ui.selectedSpaceId);
-      if (space) space.project_client_key = value || null;
-      showToast('Google Chat', value ? 'Conversation liée au projet.' : 'Lien projet retiré.');
-    } catch (error) {
-      showToast('Association impossible', error?.message || 'Erreur Pilotage.');
     }
   }
 
@@ -672,6 +691,23 @@
       }, realtimeEvent)
       .subscribe();
     channels.push(incoming, outgoing);
+
+    try {
+      const chatChannel = chatApi().subscribe(async payload => {
+        const row = payload?.new || {};
+        const isOwn = row.sender_member_id === currentMember()?.id;
+        await syncChat(true);
+        if (ui.selectedSpaceId === row.room_id && ui.open && ui.tab === 'chat') {
+          await loadMessages(row.room_id, true);
+        } else if (!isOwn) {
+          notification('Nouveau message SpeedArti', 'Un nouveau message est arrivé dans le chat.');
+        }
+      });
+      if (chatChannel) channels.push(chatChannel);
+    } catch (error) {
+      console.warn('Realtime Chat indisponible', error);
+    }
+
     ui.realtimeReady = true;
   }
 
@@ -701,7 +737,9 @@
     });
     root.querySelectorAll('[data-gw-space]').forEach(el => el.addEventListener('click', () => openSpace(el.dataset.gwSpace)));
     root.querySelector('#gwSendForm')?.addEventListener('submit', sendMessage);
-    root.querySelector('#gwChatProject')?.addEventListener('change', e => linkProject(e.target.value));
+    root.querySelector('[data-gw-action="open-chat-room"]')?.addEventListener('click', () => { ui.form = 'chat-room'; ui.chatView = 'spaces'; render(); });
+    root.querySelector('[data-gw-action="close-chat-room"]')?.addEventListener('click', () => { ui.form = null; render(); });
+    root.querySelector('#gwCreateChatRoomForm')?.addEventListener('submit', createChatRoom);
     root.querySelector('[data-gw-action="refresh-meetings"]')?.addEventListener('click', () => refreshMeetings(false));
     root.querySelector('[data-gw-action="open-request"]')?.addEventListener('click', () => { ui.form = 'request'; render(); });
     root.querySelector('[data-gw-action="open-meet"]')?.addEventListener('click', () => { ui.form = 'meet'; render(); });
@@ -734,9 +772,10 @@
   }
 
   async function initialLoad() {
-    await refreshStatus();
-    if (!ui.status?.account || ui.status?.needs_reconnect) return;
-    await Promise.allSettled([syncChat(true), refreshMeetings(true)]);
+    await Promise.allSettled([refreshStatus(), syncChat(true)]);
+    if (ui.status?.account && !ui.status?.needs_reconnect) {
+      await refreshMeetings(true);
+    }
   }
 
   function installObserver() {
@@ -766,9 +805,9 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         refreshStatus().then(() => {
-          refreshMeetings(true);
-          syncChat(true);
+          if (ui.status?.account && !ui.status?.needs_reconnect) refreshMeetings(true);
         });
+        syncChat(true);
       }
     });
   }
