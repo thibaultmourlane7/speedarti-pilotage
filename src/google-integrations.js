@@ -9,7 +9,11 @@
     DRIVE_LINK: 'PILOT-GOOGLE-006',
     CAL_LIST: 'PILOT-GOOGLE-007',
     CAL_SYNC: 'PILOT-GOOGLE-008',
-    CAL_LINK: 'PILOT-GOOGLE-009'
+    CAL_LINK: 'PILOT-GOOGLE-009',
+    CHAT_SYNC: 'PILOT-GOOGLE-011',
+    CHAT_SEND: 'PILOT-GOOGLE-012',
+    MEET_CREATE: 'PILOT-GOOGLE-013',
+    MEETING_REQUEST: 'PILOT-GOOGLE-014'
   });
 
   function trace(tag, message, details = {}) {
@@ -140,6 +144,30 @@
       const r = await invoke('link_calendar_event', { event_id: eventId, project_client_key: projectClientKey, task_client_key: taskClientKey });
       await refreshPilotage();
       return r;
-    }
+    },
+    syncChat: async () => {
+      trace(TAGS.CHAT_SYNC, 'Synchronisation Google Chat demandée');
+      return invoke('sync_chat');
+    },
+    listChatSpaces: () => invoke('list_chat_spaces'),
+    listChatMessages: spaceId => invoke('list_chat_messages', { space_id: spaceId }),
+    markChatSpaceSeen: spaceId => invoke('mark_chat_space_seen', { space_id: spaceId }),
+    sendChatMessage: async (spaceId, text) => {
+      trace(TAGS.CHAT_SEND, 'Envoi Google Chat', { spaceId });
+      return invoke('send_chat_message', { space_id: spaceId, text });
+    },
+    linkChatSpaceProject: (spaceId, projectClientKey = null) =>
+      invoke('link_chat_space_project', { space_id: spaceId, project_client_key: projectClientKey }),
+    createMeetEvent: payload => {
+      trace(TAGS.MEET_CREATE, 'Création réunion Google Meet');
+      return invoke('create_meet_event', payload);
+    },
+    createMeetingRequest: payload => {
+      trace(TAGS.MEETING_REQUEST, 'Création demande de réunion');
+      return invoke('create_meeting_request', payload);
+    },
+    listMeetingRequests: () => invoke('list_meeting_requests'),
+    respondMeetingRequest: (requestId, decision, payload = {}) =>
+      invoke('respond_meeting_request', { request_id: requestId, decision, ...payload })
   });
 })();
