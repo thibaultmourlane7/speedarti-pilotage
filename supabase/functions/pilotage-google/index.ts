@@ -520,7 +520,7 @@ async function syncGoogleChat(
     const seenAt = space.last_seen_at ? new Date(space.last_seen_at).getTime() : null;
     const unread = seenAt
       ? rows.filter((row: any) => new Date(row.create_time).getTime() > seenAt && !row.deleted).length
-      : 0;
+      : Math.max(0, Number(space.unread_count || 0) + fresh.length);
     unreadTotal += unread;
 
     await db.from("google_chat_spaces").update({
