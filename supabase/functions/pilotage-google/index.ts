@@ -8,7 +8,23 @@ const CORS = {
 const JSON_HEADERS = { ...CORS, "Content-Type": "application/json; charset=utf-8" };
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
-const OAUTH_SCOPES = ["openid", "email", DRIVE_SCOPE, CALENDAR_SCOPE].join(" ");
+const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const CALENDAR_LIST_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+const CHAT_SPACES_SCOPE = "https://www.googleapis.com/auth/chat.spaces.readonly";
+const CHAT_MESSAGES_READ_SCOPE = "https://www.googleapis.com/auth/chat.messages.readonly";
+const CHAT_MESSAGES_CREATE_SCOPE = "https://www.googleapis.com/auth/chat.messages.create";
+const REQUIRED_SCOPES = [
+  "openid",
+  "email",
+  DRIVE_SCOPE,
+  CALENDAR_SCOPE,
+  CALENDAR_EVENTS_SCOPE,
+  CALENDAR_LIST_SCOPE,
+  CHAT_SPACES_SCOPE,
+  CHAT_MESSAGES_READ_SCOPE,
+  CHAT_MESSAGES_CREATE_SCOPE,
+];
+const OAUTH_SCOPES = REQUIRED_SCOPES.join(" ");
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 function response(body: unknown, status = 200) {
@@ -79,19 +95,21 @@ async function currentMember(req: Request, db: ReturnType<typeof dbClient>) {
     .eq("profile_id", userData.user.id).eq("active", true).maybeSingle();
   return member ? { ...member, email: userData.user.email || null } : null;
 }
-async function ensureIntegration(db: ReturnType<typeof dbClient>, memberId: string, provider: "google_drive" | "google_calendar") {
+async function ensureIntegration(db: ReturnType<typeof dbClient>, memberId: string, provider: string) {
   const { data: existing } = await db.from("integrations").select("*")
     .eq("owner_member_id", memberId).eq("provider", provider).maybeSingle();
   if (existing) return existing;
   const configuration = provider === "google_drive"
     ? { root_folder_id: null, root_folder_name: null, drive_id: null, include_subfolders: true, include_shared_drives: true, sync_mode: "read_only", scope_rule: "selected_root_only" }
-    : { multi_calendar: true, selected_calendar_ids: [], default_sync_mode: "read_only" };
+    : provider === "google_calendar"
+      ? { multi_calendar: true, selected_calendar_ids: [], default_sync_mode: "read_only", meet_enabled: true }
+      : { sync_mode: "polling", poll_interval_seconds: 60, project_links: true };
   const { data, error } = await db.from("integrations").insert({ owner_member_id: memberId, provider, status: "disconnected", configuration }).select().single();
   if (error) throw error;
   return data;
 }
 async function setGoogleConnected(db: ReturnType<typeof dbClient>, memberId: string, email: string | null) {
-  for (const provider of ["google_drive", "google_calendar"] as const) {
+  for (const provider of ["google_drive", "google_calendar", "google_chat"] as const) {
     const integration = await ensureIntegration(db, memberId, provider);
     await db.from("integrations").update({
       status: "connected",
@@ -176,6 +194,359 @@ async function taskAccess(db: ReturnType<typeof dbClient>, member: any, taskClie
   return task;
 }
 
+
+async function memberEmail(db: ReturnType<typeof dbClient>, memberId: string) {
+  const { data: row } = await db.from("team_members").select("profile_id").eq("id", memberId).maybeSingle();
+  if (!row?.profile_id) return null;
+  const { data, error } = await db.auth.admin.getUserById(row.profile_id);
+  if (error) return null;
+  return data?.user?.email || null;
+}
+
+async function notifyMember(
+  db: ReturnType<typeof dbClient>,
+  recipientMemberId: string,
+  input: {
+    clientKey: string;
+    severity?: "info" | "action" | "warning" | "error";
+    type: string;
+    title: string;
+    message: string;
+    actionType?: string;
+    projectId?: string | null;
+    taskId?: string | null;
+    groupKey?: string | null;
+    internalTag?: string | null;
+    count?: number;
+  }
+) {
+  const row = {
+    client_key: input.clientKey,
+    recipient_member_id: recipientMemberId,
+    severity: input.severity || "info",
+    type: input.type,
+    title: input.title,
+    message: input.message,
+    action_type: input.actionType || "read",
+    project_id: input.projectId || null,
+    task_id: input.taskId || null,
+    group_key: input.groupKey || null,
+    internal_tag: input.internalTag || null,
+    count: Math.max(1, Number(input.count || 1)),
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await db.from("notifications").upsert(row, {
+    onConflict: "client_key",
+    ignoreDuplicates: true,
+  });
+  if (error) throw error;
+}
+
+function grantedScopeSet(scope: string | null | undefined) {
+  return new Set(String(scope || "").split(/\s+/).map(x => x.trim()).filter(Boolean));
+}
+
+async function listGoogleCalendars(token: string) {
+  let pageToken = "";
+  const items: any[] = [];
+  do {
+    const params = new URLSearchParams({ maxResults: "250" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const data = await googleFetch(token, `https://www.googleapis.com/calendar/v3/users/me/calendarList?${params}`);
+    items.push(...(data.items || []));
+    pageToken = data.nextPageToken || "";
+  } while (pageToken);
+  return items;
+}
+
+async function ensurePrimaryCalendarSource(
+  db: ReturnType<typeof dbClient>,
+  memberId: string,
+  token: string
+) {
+  const integration = await ensureIntegration(db, memberId, "google_calendar");
+  const calendars = await listGoogleCalendars(token);
+  const primary = calendars.find((c: any) => c.primary) || calendars[0];
+  if (!primary?.id) throw new Error("Aucun agenda Google disponible pour créer la réunion.");
+
+  const row = {
+    integration_id: integration.id,
+    external_calendar_id: primary.id,
+    name: primary.summary || primary.id,
+    description: primary.description || null,
+    timezone: primary.timeZone || "Europe/Paris",
+    access_role: primary.accessRole || null,
+    is_primary: Boolean(primary.primary),
+    selected: true,
+    shared_with_team: false,
+    sync_mode: "two_way",
+    background_color: primary.backgroundColor || null,
+    foreground_color: primary.foregroundColor || null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await db.from("calendar_sources")
+    .upsert(row, { onConflict: "integration_id,external_calendar_id" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+function meetUrlFromEvent(event: any) {
+  return event?.hangoutLink
+    || event?.conferenceData?.entryPoints?.find((p: any) => p?.entryPointType === "video")?.uri
+    || null;
+}
+
+async function persistCalendarEvent(
+  db: ReturnType<typeof dbClient>,
+  source: any,
+  event: any,
+  projectId: string | null,
+  taskId: string | null
+) {
+  const row = {
+    calendar_source_id: source.id,
+    project_id: projectId,
+    task_id: taskId,
+    external_event_id: event.id,
+    status: event.status || "confirmed",
+    summary: event.summary || "Réunion",
+    description: event.description || null,
+    location: event.location || null,
+    start_at: event.start?.dateTime || null,
+    end_at: event.end?.dateTime || null,
+    start_date: event.start?.date || null,
+    end_date: event.end?.date || null,
+    all_day: Boolean(event.start?.date && !event.start?.dateTime),
+    html_link: event.htmlLink || null,
+    organizer_email: event.organizer?.email || null,
+    meet_url: meetUrlFromEvent(event),
+    conference_id: event.conferenceData?.conferenceId || null,
+    attendees: Array.isArray(event.attendees) ? event.attendees : [],
+    updated_remote_at: event.updated || null,
+    last_synced_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await db.from("calendar_events")
+    .upsert(row, { onConflict: "calendar_source_id,external_event_id" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function createMeetEventForMember(
+  db: ReturnType<typeof dbClient>,
+  member: any,
+  token: string,
+  input: {
+    title: string;
+    description?: string | null;
+    start_at: string;
+    end_at: string;
+    timezone?: string | null;
+    attendee_emails?: string[];
+    project_id?: string | null;
+    task_id?: string | null;
+  }
+) {
+  const start = new Date(input.start_at);
+  const end = new Date(input.end_at);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    throw new Error("Créneau de réunion invalide.");
+  }
+
+  const source = await ensurePrimaryCalendarSource(db, member.id, token);
+  const timezone = input.timezone || source.timezone || "Europe/Paris";
+  const attendeeEmails = [...new Set((input.attendee_emails || [])
+    .map(x => String(x || "").trim())
+    .filter(Boolean))];
+
+  const eventBody = {
+    summary: String(input.title || "Réunion SpeedArti").slice(0, 240),
+    description: input.description || undefined,
+    start: { dateTime: start.toISOString(), timeZone: timezone },
+    end: { dateTime: end.toISOString(), timeZone: timezone },
+    attendees: attendeeEmails.map(email => ({ email })),
+    conferenceData: {
+      createRequest: {
+        requestId: crypto.randomUUID(),
+        conferenceSolutionKey: { type: "hangoutsMeet" },
+      },
+    },
+  };
+
+  const remote = await googleFetch(
+    token,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.external_calendar_id)}/events?conferenceDataVersion=1&sendUpdates=all`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(eventBody),
+    }
+  );
+
+  const stored = await persistCalendarEvent(
+    db,
+    source,
+    remote,
+    input.project_id || null,
+    input.task_id || null
+  );
+
+  return {
+    event: stored,
+    google_event_id: remote.id,
+    meet_url: meetUrlFromEvent(remote),
+    html_link: remote.htmlLink || null,
+    calendar_source_id: source.id,
+  };
+}
+
+async function syncGoogleChat(
+  db: ReturnType<typeof dbClient>,
+  member: any,
+  token: string
+) {
+  const integration = await ensureIntegration(db, member.id, "google_chat");
+  let pageToken = "";
+  const remoteSpaces: any[] = [];
+
+  do {
+    const params = new URLSearchParams({ pageSize: "200" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const data = await googleFetch(token, `https://chat.googleapis.com/v1/spaces?${params}`);
+    remoteSpaces.push(...(data.spaces || []));
+    pageToken = data.nextPageToken || "";
+  } while (pageToken && remoteSpaces.length < 1000);
+
+  const { data: existingRows } = await db.from("google_chat_spaces")
+    .select("*").eq("integration_id", integration.id);
+  const existing = new Map((existingRows || []).map((r: any) => [r.external_space_name, r]));
+  const now = new Date().toISOString();
+
+  if (remoteSpaces.length) {
+    const spaceRows = remoteSpaces.map((space: any) => ({
+      integration_id: integration.id,
+      external_space_name: space.name,
+      display_name: space.displayName || (space.spaceType === "DIRECT_MESSAGE" ? "Message direct" : space.name),
+      space_type: space.spaceType || null,
+      space_uri: space.spaceUri || null,
+      project_id: existing.get(space.name)?.project_id || null,
+      last_seen_at: existing.get(space.name)?.last_seen_at || null,
+      last_notified_at: existing.get(space.name)?.last_notified_at || null,
+      unread_count: Number(existing.get(space.name)?.unread_count || 0),
+      last_synced_at: now,
+      updated_at: now,
+    }));
+    const { error } = await db.from("google_chat_spaces")
+      .upsert(spaceRows, { onConflict: "integration_id,external_space_name" });
+    if (error) throw error;
+  }
+
+  const { data: spaces } = await db.from("google_chat_spaces")
+    .select("*")
+    .eq("integration_id", integration.id)
+    .order("display_name", { ascending: true });
+
+  let unreadTotal = 0;
+  let newMessages = 0;
+
+  for (const space of (spaces || []).slice(0, 40)) {
+    const params = new URLSearchParams({
+      pageSize: "50",
+      orderBy: "createTime DESC",
+      showDeleted: "true",
+    });
+    const data = await googleFetch(
+      token,
+      `https://chat.googleapis.com/v1/${space.external_space_name}/messages?${params}`
+    );
+    const messages = data.messages || [];
+    const rows = messages
+      .filter((m: any) => m?.name && m?.createTime)
+      .map((m: any) => ({
+        space_id: space.id,
+        external_message_name: m.name,
+        thread_name: m.thread?.name || null,
+        sender_user_name: m.sender?.name || null,
+        sender_display_name: m.sender?.displayName || null,
+        text: m.text || "",
+        formatted_text: m.formattedText || null,
+        create_time: m.createTime,
+        update_time: m.lastUpdateTime || null,
+        deleted: Boolean(m.deleteTime),
+        last_synced_at: now,
+        updated_at: now,
+      }));
+
+    if (rows.length) {
+      const { error } = await db.from("google_chat_messages")
+        .upsert(rows, { onConflict: "space_id,external_message_name" });
+      if (error) throw error;
+    }
+
+    const newestTime = rows.reduce((max: string | null, row: any) => {
+      if (!max || new Date(row.create_time) > new Date(max)) return row.create_time;
+      return max;
+    }, null);
+
+    const notifyAfter = space.last_notified_at ? new Date(space.last_notified_at).getTime() : null;
+    const fresh = notifyAfter
+      ? rows.filter((row: any) => new Date(row.create_time).getTime() > notifyAfter && !row.deleted)
+      : [];
+
+    if (fresh.length) {
+      newMessages += fresh.length;
+      const latest = fresh.sort((a: any, b: any) =>
+        new Date(b.create_time).getTime() - new Date(a.create_time).getTime()
+      )[0];
+      const hash = await sha256Hex(latest.external_message_name);
+      await notifyMember(db, member.id, {
+        clientKey: `google-chat-${hash.slice(0, 32)}`,
+        severity: "info",
+        type: "google_chat_message",
+        title: `Nouveau message · ${space.display_name || "Google Chat"}`,
+        message: `${latest.sender_display_name || "Google Chat"} : ${String(latest.text || "Nouveau message").slice(0, 280)}`,
+        actionType: "read",
+        projectId: space.project_id || null,
+        groupKey: `google-chat-${space.id}`,
+        internalTag: "PILOT-GOOGLE-CHAT-NEW",
+        count: fresh.length,
+      });
+    }
+
+    const seenAt = space.last_seen_at ? new Date(space.last_seen_at).getTime() : null;
+    const unread = seenAt
+      ? rows.filter((row: any) => new Date(row.create_time).getTime() > seenAt && !row.deleted).length
+      : 0;
+    unreadTotal += unread;
+
+    await db.from("google_chat_spaces").update({
+      last_remote_message_at: newestTime || space.last_remote_message_at || null,
+      last_notified_at: newestTime || space.last_notified_at || null,
+      unread_count: unread,
+      last_synced_at: now,
+      updated_at: now,
+    }).eq("id", space.id);
+  }
+
+  await db.from("integrations").update({
+    status: "connected",
+    last_synced_at: now,
+    last_error: null,
+    updated_at: now,
+  }).eq("id", integration.id);
+
+  const { data: freshSpaces } = await db.from("google_chat_spaces")
+    .select("id,external_space_name,display_name,space_type,space_uri,project_id,last_remote_message_at,last_seen_at,unread_count,last_synced_at")
+    .eq("integration_id", integration.id)
+    .order("last_remote_message_at", { ascending: false, nullsFirst: false });
+
+  return { spaces: freshSpaces || [], unread_total: unreadTotal, new_messages: newMessages };
+}
+
 async function callback(req: Request, db: ReturnType<typeof dbClient>) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
@@ -244,9 +615,25 @@ Deno.serve(async (req: Request) => {
   try {
     if (action === "status") {
       const { data: integrations } = await db.from("integrations").select("provider,status,configuration,last_synced_at,last_error")
-        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar"]);
-      const { data: cred } = await db.from("google_credentials").select("google_email,access_token_expires_at,updated_at").eq("owner_member_id", member.id).maybeSingle();
-      return response({ configured: cfg.configured, integrations: integrations || [], account: cred || null, redirect_uri: cfg.redirectUri });
+        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar", "google_chat"]);
+      const { data: cred } = await db.from("google_credentials")
+        .select("google_email,access_token_expires_at,updated_at,scope")
+        .eq("owner_member_id", member.id).maybeSingle();
+      const granted = grantedScopeSet(cred?.scope);
+      const missingScopes = REQUIRED_SCOPES.filter(scope => !granted.has(scope));
+      return response({
+        configured: cfg.configured,
+        integrations: integrations || [],
+        account: cred ? {
+          google_email: cred.google_email,
+          access_token_expires_at: cred.access_token_expires_at,
+          updated_at: cred.updated_at,
+        } : null,
+        required_scopes: REQUIRED_SCOPES,
+        missing_scopes: missingScopes,
+        needs_reconnect: Boolean(cred && missingScopes.length),
+        redirect_uri: cfg.redirectUri
+      });
     }
 
     if (!cfg.configured) return response({ error: "Google OAuth n’est pas encore configuré côté serveur.", code: "google_not_configured", redirect_uri: cfg.redirectUri }, 503);
@@ -279,7 +666,7 @@ Deno.serve(async (req: Request) => {
     if (action === "disconnect") {
       await db.from("google_credentials").delete().eq("owner_member_id", member.id);
       await db.from("integrations").update({ status: "disconnected", last_error: null, updated_at: new Date().toISOString() })
-        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar"]);
+        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar", "google_chat"]);
       return response({ ok: true });
     }
 
@@ -479,15 +866,7 @@ Deno.serve(async (req: Request) => {
 
     if (action === "list_calendars") {
       const integration = await ensureIntegration(db, member.id, "google_calendar");
-      let pageToken = "";
-      const items: any[] = [];
-      do {
-        const params = new URLSearchParams({ maxResults: "250" });
-        if (pageToken) params.set("pageToken", pageToken);
-        const data = await googleFetch(token, `https://www.googleapis.com/calendar/v3/users/me/calendarList?${params}`);
-        items.push(...(data.items || []));
-        pageToken = data.nextPageToken || "";
-      } while (pageToken);
+      const items = await listGoogleCalendars(token);
       const { data: existing } = await db.from("calendar_sources").select("external_calendar_id,selected,shared_with_team,sync_mode").eq("integration_id", integration.id);
       const old = new Map<string, any>((existing || []).map((x: any) => [x.external_calendar_id, x]));
       const rows = items.map((c: any) => ({
@@ -562,6 +941,9 @@ Deno.serve(async (req: Request) => {
               all_day: Boolean(event.start?.date && !event.start?.dateTime),
               html_link: event.htmlLink || null,
               organizer_email: event.organizer?.email || null,
+              meet_url: meetUrlFromEvent(event),
+              conference_id: event.conferenceData?.conferenceId || null,
+              attendees: Array.isArray(event.attendees) ? event.attendees : [],
               updated_remote_at: event.updated || null,
               last_synced_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
@@ -593,11 +975,313 @@ Deno.serve(async (req: Request) => {
       return response({ ok: true });
     }
 
+
+    if (action === "sync_chat") {
+      const result = await syncGoogleChat(db, member, token);
+      return response({ ok: true, ...result });
+    }
+
+    if (action === "list_chat_spaces") {
+      const integration = await ensureIntegration(db, member.id, "google_chat");
+      const { data: spaces, error } = await db.from("google_chat_spaces")
+        .select("id,external_space_name,display_name,space_type,space_uri,project_id,last_remote_message_at,last_seen_at,unread_count,last_synced_at")
+        .eq("integration_id", integration.id)
+        .order("last_remote_message_at", { ascending: false, nullsFirst: false });
+      if (error) throw error;
+      return response({ ok: true, spaces: spaces || [] });
+    }
+
+    if (action === "list_chat_messages") {
+      const spaceId = String(body?.space_id || "");
+      if (!spaceId) return response({ error: "Espace Chat manquant" }, 400);
+      const integration = await ensureIntegration(db, member.id, "google_chat");
+      const { data: space } = await db.from("google_chat_spaces")
+        .select("id,integration_id,display_name,external_space_name,project_id")
+        .eq("id", spaceId).eq("integration_id", integration.id).maybeSingle();
+      if (!space) return response({ error: "Espace Chat introuvable" }, 404);
+      const { data: messages, error } = await db.from("google_chat_messages")
+        .select("id,external_message_name,thread_name,sender_user_name,sender_display_name,text,formatted_text,create_time,update_time,deleted")
+        .eq("space_id", space.id)
+        .order("create_time", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+      return response({ ok: true, space, messages: (messages || []).reverse() });
+    }
+
+    if (action === "mark_chat_space_seen") {
+      const spaceId = String(body?.space_id || "");
+      const integration = await ensureIntegration(db, member.id, "google_chat");
+      const { data: space } = await db.from("google_chat_spaces")
+        .select("id").eq("id", spaceId).eq("integration_id", integration.id).maybeSingle();
+      if (!space) return response({ error: "Espace Chat introuvable" }, 404);
+      const seenAt = new Date().toISOString();
+      await db.from("google_chat_spaces").update({
+        last_seen_at: seenAt,
+        unread_count: 0,
+        updated_at: seenAt,
+      }).eq("id", space.id);
+      return response({ ok: true, seen_at: seenAt });
+    }
+
+    if (action === "send_chat_message") {
+      const spaceId = String(body?.space_id || "");
+      const textValue = String(body?.text || "").trim();
+      if (!spaceId || !textValue) return response({ error: "Espace et message requis" }, 400);
+      if (textValue.length > 32000) return response({ error: "Message trop long" }, 400);
+      const integration = await ensureIntegration(db, member.id, "google_chat");
+      const { data: space } = await db.from("google_chat_spaces")
+        .select("*").eq("id", spaceId).eq("integration_id", integration.id).maybeSingle();
+      if (!space) return response({ error: "Espace Chat introuvable" }, 404);
+
+      const remote = await googleFetch(
+        token,
+        `https://chat.googleapis.com/v1/${space.external_space_name}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: textValue }),
+        }
+      );
+
+      if (remote?.name && remote?.createTime) {
+        const { error } = await db.from("google_chat_messages").upsert({
+          space_id: space.id,
+          external_message_name: remote.name,
+          thread_name: remote.thread?.name || null,
+          sender_user_name: remote.sender?.name || null,
+          sender_display_name: remote.sender?.displayName || member.display_name,
+          text: remote.text || textValue,
+          formatted_text: remote.formattedText || null,
+          create_time: remote.createTime,
+          update_time: remote.lastUpdateTime || null,
+          deleted: false,
+          last_synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "space_id,external_message_name" });
+        if (error) throw error;
+      }
+      return response({ ok: true, message: remote });
+    }
+
+    if (action === "link_chat_space_project") {
+      const spaceId = String(body?.space_id || "");
+      const integration = await ensureIntegration(db, member.id, "google_chat");
+      const project = await projectAccess(db, member, body?.project_client_key || null);
+      const { data: space } = await db.from("google_chat_spaces")
+        .select("id").eq("id", spaceId).eq("integration_id", integration.id).maybeSingle();
+      if (!space) return response({ error: "Espace Chat introuvable" }, 404);
+      await db.from("google_chat_spaces").update({
+        project_id: project?.id || null,
+        updated_at: new Date().toISOString(),
+      }).eq("id", space.id);
+      return response({ ok: true });
+    }
+
+    if (action === "create_meet_event") {
+      const title = String(body?.title || "").trim();
+      if (!title) return response({ error: "Titre de réunion requis" }, 400);
+      const project = await projectAccess(db, member, body?.project_client_key || null);
+      const task = await taskAccess(db, member, body?.task_client_key || null);
+      const result = await createMeetEventForMember(db, member, token, {
+        title,
+        description: body?.description ? String(body.description) : null,
+        start_at: String(body?.start_at || ""),
+        end_at: String(body?.end_at || ""),
+        timezone: body?.timezone ? String(body.timezone) : "Europe/Paris",
+        attendee_emails: Array.isArray(body?.attendee_emails) ? body.attendee_emails : [],
+        project_id: project?.id || task?.project_id || null,
+        task_id: task?.id || null,
+      });
+      return response({ ok: true, ...result });
+    }
+
+    if (action === "create_meeting_request") {
+      const recipientClientKey = String(body?.recipient_client_key || "");
+      const title = String(body?.title || "").trim();
+      const start = new Date(String(body?.start_at || ""));
+      const end = new Date(String(body?.end_at || ""));
+      if (!recipientClientKey || !title) return response({ error: "Destinataire et sujet requis" }, 400);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+        return response({ error: "Créneau invalide" }, 400);
+      }
+      const { data: recipient } = await db.from("team_members")
+        .select("id,client_key,display_name,profile_id,active")
+        .eq("client_key", recipientClientKey).eq("active", true).maybeSingle();
+      if (!recipient) return response({ error: "Destinataire Pilotage introuvable" }, 404);
+      if (recipient.id === member.id) return response({ error: "Choisis un autre membre pour la demande." }, 400);
+
+      const project = await projectAccess(db, member, body?.project_client_key || null);
+      const task = await taskAccess(db, member, body?.task_client_key || null);
+      const recipientEmail = await memberEmail(db, recipient.id);
+      const clientKey = `meeting-request-${crypto.randomUUID()}`;
+      const { data: requestRow, error } = await db.from("meeting_requests").insert({
+        client_key: clientKey,
+        requester_member_id: member.id,
+        recipient_member_id: recipient.id,
+        project_id: project?.id || task?.project_id || null,
+        task_id: task?.id || null,
+        title,
+        description: body?.description ? String(body.description) : null,
+        proposed_start_at: start.toISOString(),
+        proposed_end_at: end.toISOString(),
+        timezone: String(body?.timezone || "Europe/Paris"),
+        requester_email: member.email || null,
+        recipient_email: recipientEmail,
+        status: "requested",
+      }).select().single();
+      if (error) throw error;
+
+      await notifyMember(db, recipient.id, {
+        clientKey: `meeting-request-notif-${requestRow.id}`,
+        severity: "action",
+        type: "meeting_request",
+        title: "Demande de réunion",
+        message: `${member.display_name} souhaite organiser « ${title} » le ${start.toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}.`,
+        actionType: "read",
+        projectId: requestRow.project_id,
+        taskId: requestRow.task_id,
+        groupKey: `meeting-request-${requestRow.id}`,
+        internalTag: "PILOT-GOOGLE-MEET-REQUEST",
+      });
+      return response({ ok: true, request: requestRow });
+    }
+
+    if (action === "list_meeting_requests") {
+      const { data: rows, error } = await db.from("meeting_requests")
+        .select("*")
+        .or(`requester_member_id.eq.${member.id},recipient_member_id.eq.${member.id}`)
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+
+      const memberIds = [...new Set((rows || []).flatMap((r: any) => [r.requester_member_id, r.recipient_member_id]))];
+      const { data: members } = memberIds.length
+        ? await db.from("team_members").select("id,client_key,display_name").in("id", memberIds)
+        : { data: [] };
+      const names = new Map((members || []).map((m: any) => [m.id, m]));
+      return response({
+        ok: true,
+        requests: (rows || []).map((r: any) => ({
+          ...r,
+          requester: names.get(r.requester_member_id) || null,
+          recipient: names.get(r.recipient_member_id) || null,
+          direction: r.recipient_member_id === member.id ? "incoming" : "outgoing",
+        })),
+      });
+    }
+
+    if (action === "respond_meeting_request") {
+      const requestId = String(body?.request_id || "");
+      const decision = String(body?.decision || "");
+      if (!requestId || !["accept", "decline", "reschedule"].includes(decision)) {
+        return response({ error: "Réponse de réunion invalide" }, 400);
+      }
+      const { data: requestRow } = await db.from("meeting_requests")
+        .select("*").eq("id", requestId).maybeSingle();
+      if (!requestRow) return response({ error: "Demande de réunion introuvable" }, 404);
+      if (requestRow.recipient_member_id !== member.id && member.role !== "admin") {
+        return response({ error: "Seul le destinataire peut répondre." }, 403);
+      }
+      if (!["requested", "reschedule_requested"].includes(requestRow.status)) {
+        return response({ error: "Cette demande a déjà été traitée." }, 409);
+      }
+
+      if (decision === "decline") {
+        const now = new Date().toISOString();
+        await db.from("meeting_requests").update({
+          status: "declined",
+          response_message: body?.message ? String(body.message) : null,
+          responded_at: now,
+          updated_at: now,
+        }).eq("id", requestRow.id);
+        await notifyMember(db, requestRow.requester_member_id, {
+          clientKey: `meeting-response-${requestRow.id}-declined`,
+          severity: "info",
+          type: "meeting_declined",
+          title: "Réunion refusée",
+          message: `${member.display_name} a refusé la réunion « ${requestRow.title} ».`,
+          projectId: requestRow.project_id,
+          taskId: requestRow.task_id,
+          groupKey: `meeting-request-${requestRow.id}`,
+          internalTag: "PILOT-GOOGLE-MEET-DECLINED",
+        });
+        return response({ ok: true, status: "declined" });
+      }
+
+      if (decision === "reschedule") {
+        const start = new Date(String(body?.start_at || ""));
+        const end = new Date(String(body?.end_at || ""));
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+          return response({ error: "Nouveau créneau invalide" }, 400);
+        }
+        const now = new Date().toISOString();
+        await db.from("meeting_requests").update({
+          status: "reschedule_requested",
+          proposed_start_at: start.toISOString(),
+          proposed_end_at: end.toISOString(),
+          response_message: body?.message ? String(body.message) : null,
+          responded_at: now,
+          updated_at: now,
+        }).eq("id", requestRow.id);
+        await notifyMember(db, requestRow.requester_member_id, {
+          clientKey: `meeting-response-${requestRow.id}-reschedule-${start.getTime()}`,
+          severity: "action",
+          type: "meeting_rescheduled",
+          title: "Nouveau créneau proposé",
+          message: `${member.display_name} propose un autre créneau pour « ${requestRow.title} ».`,
+          projectId: requestRow.project_id,
+          taskId: requestRow.task_id,
+          groupKey: `meeting-request-${requestRow.id}`,
+          internalTag: "PILOT-GOOGLE-MEET-RESCHEDULE",
+        });
+        return response({ ok: true, status: "reschedule_requested" });
+      }
+
+      const result = await createMeetEventForMember(db, member, token, {
+        title: requestRow.title,
+        description: requestRow.description || null,
+        start_at: requestRow.proposed_start_at,
+        end_at: requestRow.proposed_end_at,
+        timezone: requestRow.timezone || "Europe/Paris",
+        attendee_emails: [requestRow.requester_email, requestRow.recipient_email].filter(Boolean),
+        project_id: requestRow.project_id,
+        task_id: requestRow.task_id,
+      });
+      const now = new Date().toISOString();
+      await db.from("meeting_requests").update({
+        status: "accepted",
+        google_event_id: result.google_event_id,
+        calendar_source_id: result.calendar_source_id,
+        meet_url: result.meet_url,
+        response_message: body?.message ? String(body.message) : null,
+        responded_at: now,
+        updated_at: now,
+      }).eq("id", requestRow.id);
+      await notifyMember(db, requestRow.requester_member_id, {
+        clientKey: `meeting-response-${requestRow.id}-accepted`,
+        severity: "info",
+        type: "meeting_accepted",
+        title: "Réunion confirmée",
+        message: result.meet_url
+          ? `${member.display_name} a accepté « ${requestRow.title} ». Le lien Google Meet est prêt.`
+          : `${member.display_name} a accepté « ${requestRow.title} ».`,
+        projectId: requestRow.project_id,
+        taskId: requestRow.task_id,
+        groupKey: `meeting-request-${requestRow.id}`,
+        internalTag: "PILOT-GOOGLE-MEET-ACCEPTED",
+      });
+      return response({ ok: true, status: "accepted", ...result });
+    }
+
     return response({ error: "Action inconnue" }, 404);
   } catch (error) {
     console.error("[PILOT-GOOGLE-ERR]", action, error);
     try {
-      const provider = action.includes("calendar") ? "google_calendar" : "google_drive";
+      const provider = action.includes("chat")
+        ? "google_chat"
+        : (action.includes("calendar") || action.includes("meet") || action.includes("meeting"))
+          ? "google_calendar"
+          : "google_drive";
       const integration = await ensureIntegration(db, member.id, provider as any);
       await markIntegrationError(db, integration.id, error);
     } catch { /* ne masque pas l'erreur initiale */ }
