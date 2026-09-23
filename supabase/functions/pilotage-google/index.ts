@@ -1179,8 +1179,16 @@ Deno.serve(async (req: Request) => {
       const { data: requestRow } = await db.from("meeting_requests")
         .select("*").eq("id", requestId).maybeSingle();
       if (!requestRow) return response({ error: "Demande de réunion introuvable" }, 404);
-      if (requestRow.recipient_member_id !== member.id && member.role !== "admin") {
-        return response({ error: "Seul le destinataire peut répondre." }, 403);
+      const canRespond =
+        member.role === "admin"
+        || (requestRow.status === "requested" && requestRow.recipient_member_id === member.id)
+        || (requestRow.status === "reschedule_requested" && requestRow.requester_member_id === member.id);
+      if (!canRespond) {
+        return response({
+          error: requestRow.status === "reschedule_requested"
+            ? "Le demandeur initial doit répondre au nouveau créneau."
+            : "Seul le destinataire peut répondre à cette demande."
+        }, 403);
       }
       if (!["requested", "reschedule_requested"].includes(requestRow.status)) {
         return response({ error: "Cette demande a déjà été traitée." }, 409);
@@ -1194,8 +1202,11 @@ Deno.serve(async (req: Request) => {
           responded_at: now,
           updated_at: now,
         }).eq("id", requestRow.id);
-        await notifyMember(db, requestRow.requester_member_id, {
-          clientKey: `meeting-response-${requestRow.id}-declined`,
+        const notifyId = member.id === requestRow.requester_member_id
+          ? requestRow.recipient_member_id
+          : requestRow.requester_member_id;
+        await notifyMember(db, notifyId, {
+          clientKey: `meeting-response-${requestRow.id}-declined-${member.id}`,
           severity: "info",
           type: "meeting_declined",
           title: "Réunion refusée",
@@ -1257,8 +1268,11 @@ Deno.serve(async (req: Request) => {
         responded_at: now,
         updated_at: now,
       }).eq("id", requestRow.id);
-      await notifyMember(db, requestRow.requester_member_id, {
-        clientKey: `meeting-response-${requestRow.id}-accepted`,
+      const notifyId = member.id === requestRow.requester_member_id
+        ? requestRow.recipient_member_id
+        : requestRow.requester_member_id;
+      await notifyMember(db, notifyId, {
+        clientKey: `meeting-response-${requestRow.id}-accepted-${member.id}`,
         severity: "info",
         type: "meeting_accepted",
         title: "Réunion confirmée",
