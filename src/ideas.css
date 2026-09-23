@@ -157,3 +157,69 @@ button.idea-association:hover{background:#f1f5f9}
   cursor:pointer;
 }
 .task-origin-idea:hover{background:#ede9fe}
+
+.idea-vote-choices{
+  display:flex;
+  gap:7px;
+  flex-wrap:wrap;
+}
+.idea-vote-choices button{
+  border:1px solid #dbe4ef;
+  background:#fff;
+  color:#475569;
+  border-radius:10px;
+  cursor:pointer;
+  font-weight:800;
+  transition:background .15s ease,border-color .15s ease,color .15s ease,transform .15s ease;
+}
+.idea-vote-choices button:hover{transform:translateY(-1px)}
+.idea-vote-choices.compact button{
+  padding:6px 9px;
+  font-size:10px;
+}
+.idea-vote-choices.detail{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  margin-top:10px;
+}
+.idea-vote-choices.detail button{
+  min-height:72px;
+  padding:10px;
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  align-items:center;
+  gap:7px;
+  text-align:left;
+}
+.idea-vote-choices.detail button>span{font-size:18px}
+.idea-vote-choices.detail button>strong{font-size:10px}
+.idea-vote-choices.detail button>b{
+  min-width:26px;
+  height:26px;
+  border-radius:999px;
+  display:grid;
+  place-items:center;
+  background:#f8fafc;
+  font-size:10px;
+}
+.idea-vote-choices button.active.like{
+  background:#ecfdf5;
+  border-color:#86efac;
+  color:#15803d;
+}
+.idea-vote-choices button.active.dislike{
+  background:#fff1f2;
+  border-color:#fda4af;
+  color:#be123c;
+}
+.idea-vote-choices button.active.neutral{
+  background:#f1f5f9;
+  border-color:#cbd5e1;
+  color:#475569;
+}
+.idea-voters .vote-like{background:#ecfdf5;color:#15803d}
+.idea-voters .vote-dislike{background:#fff1f2;color:#be123c}
+.idea-voters .vote-neutral{background:#f1f5f9;color:#475569}
+@media(max-width:700px){
+  .idea-vote-choices.detail{grid-template-columns:1fr}
+}
