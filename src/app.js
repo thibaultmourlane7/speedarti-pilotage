@@ -1744,15 +1744,15 @@ async function ensureIdeasAssets() {
   if (!document.querySelector('link[href*="ideas.css"]')) {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = './src/ideas.css?v=20260923-3';
+    link.href = './src/ideas.css?v=20260923-4';
     document.head.appendChild(link);
   }
 
   if (!window.PILOTAGE_IDEAS) {
-    await loadExternalScript('./src/pilotage-ideas.js?v=20260923-2', 'PILOTAGE_IDEAS');
+    await loadExternalScript('./src/pilotage-ideas.js?v=20260923-3', 'PILOTAGE_IDEAS');
   }
   if (!window.PILOTAGE_IDEAS_UI) {
-    await loadExternalScript('./src/ideas-ui.js?v=20260923-4', 'PILOTAGE_IDEAS_UI');
+    await loadExternalScript('./src/ideas-ui.js?v=20260923-5', 'PILOTAGE_IDEAS_UI');
   }
 
   if (!window.PILOTAGE_IDEAS || !window.PILOTAGE_IDEAS_UI) {
