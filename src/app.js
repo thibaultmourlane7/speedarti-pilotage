@@ -9,6 +9,20 @@ let planningTaskId = null;
 let taskModalOpen = false;
 let taskModalProjectId = null;
 let projectModalOpen = false;
+let projectModalParentId = null;
+let projectDetailTab = 'overview';
+let documentModalProjectId = null;
+let projectTreeMoveBusy = false;
+let draggedProjectId = null;
+const PROJECT_TREE_COLLAPSE_KEY = 'speedarti-pilotage-project-tree-collapsed';
+let collapsedProjectIds = new Set((() => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROJECT_TREE_COLLAPSE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+})());
 let projectFilter = 'all';
 let planningFilterProject = 'all';
 let planningFilterOwner = 'all';
@@ -331,9 +345,12 @@ function ensureRuntimeState() {
   state.dailyReports.forEach(report => {
     if (report.source === 'ai' && !report.sourceAgent) report.sourceAgent = aiAgentsForPerson(report.personId)[0]?.id || null;
   });
-  state.projects.forEach(p => {
+  state.projects.forEach((p, index) => {
     if (typeof p.archived !== 'boolean') p.archived = false;
     p.members = projectMemberIds(p);
+    if (!('parentProjectId' in p)) p.parentProjectId = null;
+    if (!Number.isFinite(Number(p.treeSortOrder))) p.treeSortOrder = (index + 1) * 1000;
+    if (!Number.isFinite(Number(p.manualProgress))) p.manualProgress = Number(p.progress || 0);
   });
   state.notifications = state.notifications.filter(n => !(n.type === 'approval_required' && !n.changeRequestId && !n.projectId));
   state.notifications.forEach(n => {
@@ -523,6 +540,159 @@ function taskCompletionSummary(projectId) {
   const list = state.tasks.filter(t => t.projectId === projectId);
   const done = list.filter(t => t.status === 'completed').length;
   return { done, total:list.length };
+}
+
+function projectChildren(parentId) {
+  return state.projects
+    .filter(p => (p.parentProjectId || null) === (parentId || null))
+    .sort((a,b) =>
+      Number(a.treeSortOrder || 0) - Number(b.treeSortOrder || 0)
+      || String(a.name || '').localeCompare(String(b.name || ''), 'fr')
+    );
+}
+
+function projectHasChildren(projectId) {
+  return state.projects.some(p => p.parentProjectId === projectId);
+}
+
+function projectAncestorChain(projectId) {
+  const chain = [];
+  const seen = new Set();
+  let current = project(projectId);
+  while (current?.parentProjectId && !seen.has(current.parentProjectId)) {
+    seen.add(current.parentProjectId);
+    const parent = project(current.parentProjectId);
+    if (!parent) break;
+    chain.unshift(parent);
+    current = parent;
+  }
+  return chain;
+}
+
+function projectDescendantIds(projectId) {
+  const ids = [];
+  const walk = id => {
+    projectChildren(id).forEach(child => {
+      ids.push(child.id);
+      walk(child.id);
+    });
+  };
+  walk(projectId);
+  return ids;
+}
+
+function projectTreeTaskSummary(projectId) {
+  const scope = new Set([projectId, ...projectDescendantIds(projectId)]);
+  const list = state.tasks.filter(t => scope.has(t.projectId));
+  return {
+    done: list.filter(t => t.status === 'completed').length,
+    total: list.length
+  };
+}
+
+function projectEffectiveProgress(p) {
+  if (!p) return 0;
+  if (!projectHasChildren(p.id)) return Math.max(0, Math.min(100, Number(p.progress || 0)));
+  const summary = projectTreeTaskSummary(p.id);
+  return summary.total ? Math.round((summary.done * 100) / summary.total) : 0;
+}
+
+function projectDepthLocal(projectId) {
+  return projectAncestorChain(projectId).length;
+}
+
+function projectTreeMaxDepth(projectId) {
+  const walk = (id, depth) => {
+    const children = projectChildren(id);
+    if (!children.length) return depth;
+    return Math.max(...children.map(child => walk(child.id, depth + 1)));
+  };
+  return walk(projectId, 0);
+}
+
+function projectMoveAllowed(projectId, parentId) {
+  if (!projectId) return false;
+  if (!parentId) return true;
+  if (projectId === parentId) return false;
+  if (projectDescendantIds(projectId).includes(parentId)) return false;
+  const targetDepth = projectDepthLocal(parentId) + 1;
+  return targetDepth + projectTreeMaxDepth(projectId) <= 2;
+}
+
+function persistProjectTreeCollapse() {
+  localStorage.setItem(PROJECT_TREE_COLLAPSE_KEY, JSON.stringify([...collapsedProjectIds]));
+}
+
+function toggleProjectTree(projectId) {
+  if (collapsedProjectIds.has(projectId)) collapsedProjectIds.delete(projectId);
+  else collapsedProjectIds.add(projectId);
+  persistProjectTreeCollapse();
+  render();
+}
+
+function projectMatchesFilter(p) {
+  if (projectFilter === 'archived') return Boolean(p.archived);
+  if (p.archived) return false;
+  if (projectFilter === 'all') return true;
+  if (projectFilter === 'blocked') return p.status === 'blocked' || Boolean(p.blocker);
+  return p.status === projectFilter;
+}
+
+function visibleProjectTreeSet() {
+  const matched = state.projects.filter(projectMatchesFilter);
+  const visible = new Set(matched.map(p => p.id));
+  if (!['all','archived'].includes(projectFilter)) {
+    matched.forEach(p => projectAncestorChain(p.id).forEach(parent => visible.add(parent.id)));
+  }
+  return visible;
+}
+
+function projectTreeRoots(visibleSet) {
+  return state.projects
+    .filter(p => visibleSet.has(p.id))
+    .filter(p => !p.parentProjectId || !visibleSet.has(p.parentProjectId))
+    .sort((a,b) =>
+      Number(a.treeSortOrder || 0) - Number(b.treeSortOrder || 0)
+      || String(a.name || '').localeCompare(String(b.name || ''), 'fr')
+    );
+}
+
+async function moveProjectInTree(projectId, { parentId = null, beforeId = null } = {}) {
+  if (projectTreeMoveBusy || !projectId) return;
+  const moving = project(projectId);
+  if (!moving || !canManageProject(moving)) return;
+
+  const targetParentId = beforeId ? (project(beforeId)?.parentProjectId || null) : parentId;
+  if (!projectMoveAllowed(projectId, targetParentId)) {
+    window.alert('Déplacement impossible : la hiérarchie est limitée à 3 niveaux et aucune boucle n’est autorisée.');
+    return;
+  }
+
+  const client = window.PILOTAGE_SUPABASE_CLIENT;
+  if (!client) {
+    window.alert('Connexion Supabase indisponible.');
+    return;
+  }
+
+  projectTreeMoveBusy = true;
+  render();
+
+  try {
+    await window.PILOTAGE_REMOTE?.flush?.();
+    const { error } = await client.rpc('move_pilotage_project', {
+      p_project_client_key: projectId,
+      p_parent_client_key: parentId || null,
+      p_before_client_key: beforeId || null
+    });
+    if (error) throw new Error(error.message || 'Déplacement impossible');
+
+    // La base recalcule aussi la progression de tous les parents concernés.
+    await window.PILOTAGE_REMOTE?.refreshFromSupabase?.();
+  } catch (error) {
+    projectTreeMoveBusy = false;
+    window.alert(error?.message || 'Le projet n’a pas pu être déplacé.');
+    render();
+  }
 }
 
 function pendingApprovals() {
