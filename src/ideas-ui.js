@@ -968,6 +968,7 @@
   window.PILOTAGE_IDEAS_UI = Object.freeze({
     mount,
     openIdea,
+    openNew: () => openForm(),
     refresh: () => loadList(true)
   });
 })();
