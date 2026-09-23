@@ -7,7 +7,7 @@ const JSON_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
 };
 
-const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.3" };
+const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.4" };
 const SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"];
 const REQUIRED_SCOPE = "email";
 
@@ -295,6 +295,45 @@ function toolsCatalog(auth: any) {
   return tools;
 }
 
+async function listIdeasContext(db: any) {
+  const [{ data: ideas, error: ideasError }, { data: votes, error: votesError }] = await Promise.all([
+    db
+      .from("ideas")
+      .select("id,client_key,title,status,module,origin,association_type,updated_at")
+      .order("updated_at", { ascending: false })
+      .limit(100),
+    db
+      .from("idea_votes")
+      .select("idea_id")
+  ]);
+  if (ideasError) throw ideasError;
+  if (votesError) throw votesError;
+
+  const voteCount = new Map<string, number>();
+  for (const vote of (votes || [])) {
+    voteCount.set(vote.idea_id, (voteCount.get(vote.idea_id) || 0) + 1);
+  }
+
+  const { count: activeCount, error: countError } = await db
+    .from("team_members")
+    .select("id", { count: "exact", head: true })
+    .eq("active", true);
+  if (countError) throw countError;
+  const threshold = Math.max(1, Math.ceil((Number(activeCount || 0) * 2) / 3));
+
+  return (ideas || []).map((idea: any) => ({
+    client_key: idea.client_key,
+    title: idea.title,
+    status: idea.status,
+    module: idea.module || null,
+    origin: idea.origin,
+    association_type: idea.association_type,
+    vote_count: voteCount.get(idea.id) || 0,
+    vote_threshold: threshold,
+    updated_at: idea.updated_at
+  }));
+}
+
 async function listContext(db: any, auth: any, args: any) {
   const includeCompleted = args?.include_completed === true;
   let projectIds: string[] = [];
@@ -318,6 +357,7 @@ async function listContext(db: any, auth: any, args: any) {
     if (!includeCompleted) taskQuery = taskQuery.neq("status", "completed");
     const { data: tasks } = await taskQuery;
     const byProject = Object.fromEntries(projects.map((p: any) => [p.id, p]));
+    const ideas = await listIdeasContext(db);
 
     return {
       member: auth.member.client_key,
@@ -340,7 +380,8 @@ async function listContext(db: any, auth: any, args: any) {
         due_at: t.due_at,
         project_client_key: byProject[t.project_id]?.client_key || null,
         project_name: byProject[t.project_id]?.name || null
-      }))
+      })),
+      ideas
     };
   }
 
@@ -374,6 +415,7 @@ async function listContext(db: any, auth: any, args: any) {
   }
 
   const byProject = Object.fromEntries((projects || []).map((p: any) => [p.id, p]));
+  const ideas = await listIdeasContext(db);
   return {
     member: auth.member.client_key,
     member_name: auth.member.display_name,
@@ -395,7 +437,8 @@ async function listContext(db: any, auth: any, args: any) {
       due_at: t.due_at,
       project_client_key: byProject[t.project_id]?.client_key || null,
       project_name: byProject[t.project_id]?.name || null
-    }))
+    })),
+    ideas
   };
 }
 
@@ -413,7 +456,7 @@ async function callIngest(auth: any, token: string, args: any) {
     metadata: {
       ...(args?.metadata || {}),
       source_bridge: "pilotage-mcp",
-      mcp_server_version: "16.3"
+      mcp_server_version: "16.4"
     },
     dry_run: args?.dry_run === true
   };
@@ -517,7 +560,7 @@ Deno.serve(async (req: Request) => {
         ? "Deux outils de lecture SpeedArti Pilotage sont visibles. Ils demanderont la connexion OAuth à leur premier appel."
         : auth.kind === "oauth"
           ? "Connexion ChatGPT SpeedArti Pilotage en lecture seule. Vérifie d'abord getPilotageProfile puis utilise listPilotageContext."
-          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Ne remonte que du travail réellement effectué."
+          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Les idées sont des signaux en lecture seule : ne les valide et ne les transforme jamais automatiquement. Ne remonte que du travail réellement effectué."
     }), 200, { "Mcp-Session-Id": crypto.randomUUID() });
   }
 
@@ -535,7 +578,7 @@ Deno.serve(async (req: Request) => {
         ? "Outils de lecture visibles ; OAuth requis à l'appel."
         : auth.kind === "oauth"
           ? "Connexion OAuth SpeedArti Pilotage lecture seule."
-          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche.",
+          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Les idées sont des signaux en lecture seule : ne les valide et ne les transforme jamais automatiquement.",
       ttlMs: 60000,
       cacheScope: "private"
     }));
