@@ -371,7 +371,7 @@ async function createMeetEventForMember(
     },
   };
 
-  const remote = await googleFetch(
+  let remote = await googleFetch(
     token,
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.external_calendar_id)}/events?conferenceDataVersion=1&sendUpdates=all`,
     {
@@ -380,6 +380,20 @@ async function createMeetEventForMember(
       body: JSON.stringify(eventBody),
     }
   );
+
+  // La création de la conférence Google Meet peut être légèrement asynchrone.
+  // On relit l'événement quelques fois afin de renvoyer un lien direct exploitable
+  // dès la réponse Pilotage au lieu de laisser l'utilisateur sans URL.
+  if (remote?.id && !meetUrlFromEvent(remote)) {
+    for (const delayMs of [350, 650, 1000, 1500]) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      remote = await googleFetch(
+        token,
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.external_calendar_id)}/events/${encodeURIComponent(remote.id)}?conferenceDataVersion=1`
+      );
+      if (meetUrlFromEvent(remote)) break;
+    }
+  }
 
   const stored = await persistCalendarEvent(
     db,
