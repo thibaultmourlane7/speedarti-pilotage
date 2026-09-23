@@ -21,6 +21,8 @@
     toast: null,
     form: null,
     lastMeet: null,
+    meetInvitees: [],
+    meetInviteesLoaded: false,
     booted: false,
     syncingChat: false,
     realtimeReady: false
@@ -292,7 +294,11 @@
         </div>
         <p class="gw-meeting-date">📅 ${esc(formatDateTime(r.proposed_start_at))} → ${esc(formatDateTime(r.proposed_end_at))}</p>
         ${r.description ? `<p class="gw-meeting-desc">${esc(r.description)}</p>` : ''}
-        ${r.meet_url ? `<a class="gw-meet-link" href="${esc(r.meet_url)}" target="_blank" rel="noopener">📹 Rejoindre Google Meet</a>` : ''}
+        ${r.meet_url ? `
+          <div class="gw-meet-link-row">
+            <a class="gw-meet-link" href="${esc(r.meet_url)}" target="_blank" rel="noopener">📹 Rejoindre Google Meet</a>
+            <button class="gw-secondary small" data-gw-copy-meet="${esc(r.meet_url)}">Copier le lien</button>
+          </div>` : ''}
         ${canAct ? `
           <div class="gw-inline-actions">
             <button class="gw-primary small" data-gw-meeting-accept="${esc(r.id)}">Accepter</button>
@@ -332,6 +338,7 @@
   function renderMeetForm() {
     const start = defaultStart();
     const end = new Date(start.getTime() + 30 * 60_000);
+    const internalInvitees = ui.meetInvitees.filter(invitee => !invitee.is_current);
     return `
       <form id="gwCreateMeetForm" class="gw-form">
         <div class="gw-form-head"><strong>Créer un Google Meet</strong><button type="button" class="gw-icon-button" data-gw-action="close-form">×</button></div>
@@ -340,10 +347,33 @@
           <label><span>Début</span><input id="gwMeetStart" type="datetime-local" value="${localInputValue(start)}" required /></label>
           <label><span>Fin</span><input id="gwMeetEnd" type="datetime-local" value="${localInputValue(end)}" required /></label>
         </div>
-        <label><span>Participants</span><input id="gwMeetAttendees" placeholder="email1@..., email2@..." /></label>
+
+        <fieldset class="gw-invitees">
+          <legend>Invités SpeedArti</legend>
+          ${ui.loading === 'invitees'
+            ? '<div class="gw-empty-line">Chargement des membres…</div>'
+            : internalInvitees.length
+              ? internalInvitees.map(invitee => `
+                <label class="gw-invitee-option">
+                  <input type="checkbox" data-gw-invitee-email="${esc(invitee.email || '')}" ${invitee.email ? '' : 'disabled'} />
+                  <span class="gw-invitee-avatar">${esc(invitee.initials || (invitee.display_name || '?').slice(0,2).toUpperCase())}</span>
+                  <span class="gw-invitee-copy">
+                    <strong>${esc(invitee.display_name || 'Membre')}</strong>
+                    <small>${invitee.email ? esc(invitee.email) : 'Adresse e-mail indisponible'}</small>
+                  </span>
+                </label>`).join('')
+              : '<div class="gw-empty-line">Aucun autre membre disponible.</div>'}
+        </fieldset>
+
+        <label>
+          <span>Invités externes</span>
+          <input id="gwMeetAttendees" placeholder="client@exemple.fr, partenaire@exemple.fr" />
+        </label>
+        <small class="gw-field-help">Tu peux sélectionner plusieurs membres ci-dessus et ajouter plusieurs adresses externes séparées par une virgule.</small>
+
         <label><span>Projet</span><select id="gwMeetProject"><option value="">Sans projet</option>${projects().map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
         <label><span>Description</span><textarea id="gwMeetDescription" rows="2" maxlength="2000" placeholder="Optionnel"></textarea></label>
-        <button class="gw-primary" type="submit" ${ui.loading === 'create-meet' ? 'disabled' : ''}>${ui.loading === 'create-meet' ? 'Création…' : 'Créer et inviter'}</button>
+        <button class="gw-primary" type="submit" ${ui.loading === 'create-meet' ? 'disabled' : ''}>${ui.loading === 'create-meet' ? 'Création…' : 'Créer le lien Meet et inviter'}</button>
       </form>`;
   }
 
@@ -368,8 +398,15 @@
       </div>
       ${ui.lastMeet?.meet_url ? `
         <div class="gw-last-meet">
-          <div><strong>${esc(ui.lastMeet.title || 'Google Meet')}</strong><small>Réunion créée dans Google Agenda</small></div>
-          <a href="${esc(ui.lastMeet.meet_url)}" target="_blank" rel="noopener">📹 Rejoindre</a>
+          <div class="gw-last-meet-main">
+            <strong>${esc(ui.lastMeet.title || 'Google Meet')}</strong>
+            <small>Réunion créée dans Google Agenda${ui.lastMeet.attendee_count ? ` · ${ui.lastMeet.attendee_count} invité${ui.lastMeet.attendee_count > 1 ? 's' : ''}` : ''}</small>
+            <code>${esc(ui.lastMeet.meet_url)}</code>
+          </div>
+          <div class="gw-last-meet-actions">
+            <button class="gw-secondary small" data-gw-copy-meet="${esc(ui.lastMeet.meet_url)}">Copier</button>
+            <a href="${esc(ui.lastMeet.meet_url)}" target="_blank" rel="noopener">📹 Rejoindre</a>
+          </div>
         </div>` : ''}
       ${actionableRequests().length ? `<div class="gw-action-callout"><b>${actionableRequests().length}</b> demande${actionableRequests().length > 1 ? 's' : ''} à traiter</div>` : ''}
       ${renderMeetingList()}
@@ -582,15 +619,58 @@
     }
   }
 
+  async function loadMeetInvitees(force = false) {
+    if (ui.meetInviteesLoaded && !force) return;
+    ui.loading = 'invitees';
+    render();
+    try {
+      const result = await api().listMeetingInvitees();
+      ui.meetInvitees = Array.isArray(result?.invitees) ? result.invitees : [];
+      ui.meetInviteesLoaded = true;
+      ui.meetError = '';
+    } catch (error) {
+      ui.meetError = error?.message || 'Impossible de charger les invités SpeedArti.';
+    } finally {
+      if (ui.loading === 'invitees') ui.loading = '';
+      render();
+    }
+  }
+
+  async function openMeetForm() {
+    ui.form = 'meet';
+    render();
+    await loadMeetInvitees(false);
+  }
+
+  async function copyMeetLink(url) {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Lien copié', 'Le lien Google Meet est dans le presse-papiers.');
+    } catch {
+      const area = document.createElement('textarea');
+      area.value = url;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+      showToast('Lien copié', 'Le lien Google Meet est dans le presse-papiers.');
+    }
+  }
+
   async function submitMeet(event) {
     event.preventDefault();
     const title = document.querySelector('#gwMeetTitle')?.value?.trim() || '';
     const startAt = isoFromInput('#gwMeetStart');
     const endAt = isoFromInput('#gwMeetEnd');
-    const attendees = String(document.querySelector('#gwMeetAttendees')?.value || '')
+    const internalAttendees = [...document.querySelectorAll('[data-gw-invitee-email]:checked')]
+      .map(input => String(input.dataset.gwInviteeEmail || '').trim())
+      .filter(Boolean);
+    const externalAttendees = String(document.querySelector('#gwMeetAttendees')?.value || '')
       .split(/[;,\s]+/)
       .map(v => v.trim())
       .filter(Boolean);
+    const attendees = [...new Set([...internalAttendees, ...externalAttendees])];
     if (!title || !startAt || !endAt) return;
     ui.loading = 'create-meet';
     render();
@@ -606,7 +686,7 @@
       });
       ui.form = null;
       if (result?.meet_url) {
-        ui.lastMeet = { title, meet_url: result.meet_url };
+        ui.lastMeet = { title, meet_url: result.meet_url, attendee_count: attendees.length };
         showToast('Google Meet créé', 'Le lien Meet est prêt et l’événement a été ajouté à Google Agenda.');
       } else {
         showToast('Réunion créée', 'L’événement a été ajouté à Google Agenda.');
@@ -748,13 +828,14 @@
     root.querySelector('#gwCreateChatRoomForm')?.addEventListener('submit', createChatRoom);
     root.querySelector('[data-gw-action="refresh-meetings"]')?.addEventListener('click', () => refreshMeetings(false));
     root.querySelector('[data-gw-action="open-request"]')?.addEventListener('click', () => { ui.form = 'request'; render(); });
-    root.querySelector('[data-gw-action="open-meet"]')?.addEventListener('click', () => { ui.form = 'meet'; render(); });
+    root.querySelector('[data-gw-action="open-meet"]')?.addEventListener('click', openMeetForm);
     root.querySelector('[data-gw-action="close-form"]')?.addEventListener('click', () => { ui.form = null; render(); });
     root.querySelector('#gwRequestMeetingForm')?.addEventListener('submit', submitMeetingRequest);
     root.querySelector('#gwCreateMeetForm')?.addEventListener('submit', submitMeet);
     root.querySelectorAll('[data-gw-meeting-accept]').forEach(el => el.addEventListener('click', () => respondMeeting(el.dataset.gwMeetingAccept, 'accept')));
     root.querySelectorAll('[data-gw-meeting-decline]').forEach(el => el.addEventListener('click', () => respondMeeting(el.dataset.gwMeetingDecline, 'decline')));
     root.querySelectorAll('[data-gw-meeting-reschedule]').forEach(el => el.addEventListener('click', () => proposeReschedule(el.dataset.gwMeetingReschedule)));
+    root.querySelectorAll('[data-gw-copy-meet]').forEach(el => el.addEventListener('click', () => copyMeetLink(el.dataset.gwCopyMeet)));
   }
 
   function injectAgendaShortcut() {
@@ -771,8 +852,7 @@
     btn.addEventListener('click', () => {
       ui.open = true;
       ui.tab = 'meetings';
-      ui.form = 'meet';
-      render();
+      openMeetForm();
     });
     target.appendChild(btn);
   }
