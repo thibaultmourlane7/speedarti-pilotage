@@ -47,6 +47,13 @@
     });
   }
 
+  async function setVote(ideaId, vote) {
+    return rpc('set_pilotage_idea_vote', {
+      p_idea_id: ideaId,
+      p_vote: vote
+    });
+  }
+
   async function toggleVote(ideaId) {
     return rpc('toggle_pilotage_idea_vote', { p_idea_id: ideaId });
   }
@@ -125,6 +132,7 @@
     detail,
     create,
     update,
+    setVote,
     toggleVote,
     addComment,
     deleteComment,
