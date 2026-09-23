@@ -62,6 +62,15 @@
     }[c]));
   }
 
+  function safeUrl(value = '') {
+    try {
+      const url = new URL(String(value || ''), window.location.origin);
+      return ['http:','https:'].includes(url.protocol) ? url.toString() : '';
+    } catch {
+      return '';
+    }
+  }
+
   function formatDate(value) {
     if (!value) return '';
     const d = new Date(value);
@@ -534,7 +543,7 @@
                   <article>
                     <span>${r.resource_type === 'drive' ? '▤' : r.resource_type === 'document' ? '📄' : '🔗'}</span>
                     <div><strong>${esc(r.label)}</strong><small>${esc(r.created_by_display_name || '')}</small></div>
-                    ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Ouvrir</a>` : `<em>${esc(r.reference || '')}</em>`}
+                    ${safeUrl(r.url) ? `<a href="${esc(safeUrl(r.url))}" target="_blank" rel="noopener">Ouvrir</a>` : `<em>${esc(r.reference || '')}</em>`}
                     ${ctx?.isAdmin || r.created_by_client_key === current ? `<button class="icon-btn idea-delete-resource" data-idea-delete-resource="${esc(r.resource_id)}">×</button>` : ''}
                   </article>
                 `).join('') : '<div class="idea-empty-inline">Aucune ressource.</div>'}
@@ -782,8 +791,12 @@
     } else {
       const value = document.querySelector('#ideaResourceValue')?.value?.trim() || '';
       if (!label || !value) return showToast('Ressource incomplète', 'Renseigne le libellé et le lien ou la référence.');
-      if (type === 'link') url = value;
-      else reference = value;
+      if (type === 'link') {
+        url = safeUrl(value);
+        if (!url) return showToast('Lien invalide', 'Utilise une adresse http:// ou https://.');
+      } else {
+        reference = value;
+      }
     }
 
     try {
