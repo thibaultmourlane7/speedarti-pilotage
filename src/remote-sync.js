@@ -1030,8 +1030,9 @@
     return bootState;
   }
 
-  async function refreshFromSupabase() {
-    if (!client || !auth) return;
+  async function refreshFromSupabase(options = {}) {
+    if (!client || !auth) return null;
+    const reload = options?.reload !== false;
 
     if (pendingState) {
       await withTimeout(flushLoop(), 6000, 'Synchronisation en cours').catch(error => {
@@ -1040,7 +1041,7 @@
     }
 
     // Ne jamais écraser un changement local encore non synchronisé.
-    if (pendingState) return;
+    if (pendingState) return null;
 
     try {
       const remoteState = await withTimeout(
@@ -1050,10 +1051,16 @@
       );
       baselineState = clone(remoteState);
       writeLocalState(remoteState);
-      window.location.reload();
+
+      if (reload) {
+        window.location.reload();
+      }
+
+      return remoteState;
     } catch (error) {
       lastError = error.message || String(error);
       console.error(`[${TAGS.HYDRATE}]`, error);
+      throw error;
     }
   }
 
