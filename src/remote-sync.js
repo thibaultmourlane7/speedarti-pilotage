@@ -320,6 +320,7 @@
       completedAt: row.completed_at,
       sourceType: row.source_type,
       sourceAgent: agentClient(row.source_agent_id),
+      sourceIdeaId: row.source_idea_id || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }));
