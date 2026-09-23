@@ -1101,6 +1101,30 @@ Deno.serve(async (req: Request) => {
       return response({ ok: true });
     }
 
+    if (action === "list_meeting_invitees") {
+      const { data: members, error } = await db.from("team_members")
+        .select("id,client_key,display_name,initials,team_role,profile_id")
+        .eq("active", true)
+        .order("display_name", { ascending: true });
+      if (error) throw error;
+
+      const invitees = [];
+      for (const row of (members || [])) {
+        const email = row.profile_id ? await memberEmail(db, row.id) : null;
+        invitees.push({
+          member_id: row.id,
+          client_key: row.client_key,
+          display_name: row.display_name,
+          initials: row.initials,
+          team_role: row.team_role,
+          email,
+          is_current: row.id === member.id,
+        });
+      }
+
+      return response({ ok: true, invitees });
+    }
+
     if (action === "create_meet_event") {
       const title = String(body?.title || "").trim();
       if (!title) return response({ error: "Titre de réunion requis" }, 400);
