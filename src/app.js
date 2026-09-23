@@ -2624,6 +2624,17 @@ function createProjectFromForm() {
   render();
 }
 
+function openProjectIdeas(projectId, createNew = false) {
+  currentPage = 'ideas';
+  selectedProjectId = null;
+  projectDetailTab = 'overview';
+  render();
+  setTimeout(() => {
+    if (createNew) window.PILOTAGE_IDEAS_UI?.openNewForProject?.(projectId);
+    else window.PILOTAGE_IDEAS_UI?.openForProject?.(projectId);
+  }, 100);
+}
+
 function openDocumentModal(projectId = null) {
   documentModalOpen = true;
   documentModalProjectId = projectId || null;
@@ -3185,7 +3196,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.page)));
   document.querySelectorAll('[data-mobile-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.mobilePage)));
-  document.querySelectorAll('[data-project]').forEach(el => el.addEventListener('click', () => { selectedProjectId = el.dataset.project; currentPage = 'projects'; render(); }));
+  document.querySelectorAll('[data-project]').forEach(el => el.addEventListener('click', () => { selectedProjectId = el.dataset.project; projectDetailTab = 'overview'; currentPage = 'projects'; render(); }));
   document.querySelectorAll('[data-complete]').forEach(el => el.addEventListener('click', () => completeTask(el.dataset.complete)));
   document.querySelectorAll('[data-task-status]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); advanceTaskStatus(el.dataset.taskStatus); }));
   document.querySelectorAll('[data-team-planning]').forEach(el => el.addEventListener('click', () => openTeamPlanning(el.dataset.teamPlanning)));
@@ -3238,10 +3249,12 @@ function bindEvents() {
   document.querySelectorAll('[data-retry-notif]').forEach(el => el.addEventListener('click', () => retryNotification(el.dataset.retryNotif)));
   document.querySelectorAll('[data-notif-read]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); markNotificationRead(el.dataset.notifRead); }));
   document.querySelectorAll('[data-approval]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openApproval(el.dataset.approval); }));
-  document.querySelectorAll('[data-open-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const id=el.dataset.openProject; const notifId=el.dataset.notifRead; if(notifId) markNotificationRead(notifId, false); selectedProjectId=id; currentPage='projects'; notificationOpen=false; render(); }));
+  document.querySelectorAll('[data-open-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const id=el.dataset.openProject; const notifId=el.dataset.notifRead; if(notifId) markNotificationRead(notifId, false); selectedProjectId=id; projectDetailTab='overview'; currentPage='projects'; notificationOpen=false; render(); }));
   document.querySelectorAll('[data-notif-open-filter]').forEach(el => el.addEventListener('click', () => { notificationFilter=el.dataset.notifOpenFilter || 'all'; notificationOpen=true; render(); }));
 
   document.querySelectorAll('[data-project-filter]').forEach(el => el.addEventListener('click', () => { projectFilter = el.dataset.projectFilter; render(); }));
+  document.querySelectorAll('[data-project-toggle]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); toggleProjectTree(el.dataset.projectToggle); }));
+  document.querySelectorAll('[data-project-tab]').forEach(el => el.addEventListener('click', () => { projectDetailTab = el.dataset.projectTab || 'overview'; render(); }));
   document.querySelectorAll('[data-activity-filter]').forEach(el => el.addEventListener('click', () => { activityFilter = el.dataset.activityFilter; render(); }));
   document.querySelector('#activityProjectFilter')?.addEventListener('change', e => { activityProjectFilter=e.target.value; trace(TAGS.ACTIVITY_ADVANCED, 'Filtre activité projet', { projectId:activityProjectFilter }); render(); });
   document.querySelector('#activitySearch')?.addEventListener('input', e => { activitySearch=e.target.value; trace(TAGS.ACTIVITY_ADVANCED, 'Recherche activité', { query:activitySearch }); render(); requestAnimationFrame(() => { const i=document.querySelector('#activitySearch'); if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } }); });
@@ -3251,7 +3264,11 @@ function bindEvents() {
   document.querySelectorAll('[data-action="quick-add"]').forEach(el => el.addEventListener('click', () => openTaskModal()));
   document.querySelectorAll('[data-action="add-project-task"]').forEach(el => el.addEventListener('click', () => openTaskModal(el.dataset.projectId)));
   document.querySelectorAll('[data-action="new-project"]').forEach(el => el.addEventListener('click', () => openProjectModal()));
-  document.querySelectorAll('[data-action="link-document"]').forEach(el => el.addEventListener('click', openDocumentModal));
+  document.querySelectorAll('[data-action="add-subproject"]').forEach(el => el.addEventListener('click', () => openProjectModal(null, el.dataset.projectId)));
+  document.querySelectorAll('[data-action="link-document"]').forEach(el => el.addEventListener('click', () => openDocumentModal()));
+  document.querySelectorAll('[data-action="link-project-document"]').forEach(el => el.addEventListener('click', () => openDocumentModal(el.dataset.projectId)));
+  document.querySelectorAll('[data-action="open-project-ideas"]').forEach(el => el.addEventListener('click', () => openProjectIdeas(el.dataset.projectId, false)));
+  document.querySelectorAll('[data-action="add-project-idea"]').forEach(el => el.addEventListener('click', () => openProjectIdeas(el.dataset.projectId, true)));
 
   document.querySelector('#planningProjectFilter')?.addEventListener('change', e => { planningFilterProject = e.target.value; render(); });
   document.querySelector('#planningOwnerFilter')?.addEventListener('change', e => { planningFilterOwner = e.target.value; render(); });
@@ -3298,7 +3315,7 @@ function bindEvents() {
   document.querySelector('#openNotifFromTodayBottom')?.addEventListener('click', () => { notificationOpen = true; notificationFilter='action'; render(); });
   document.querySelector('#closeNotif')?.addEventListener('click', () => { notificationOpen = false; render(); });
   document.querySelector('#drawerBackdrop')?.addEventListener('click', () => { notificationOpen = false; render(); });
-  document.querySelector('#backProjects')?.addEventListener('click', () => { selectedProjectId = null; render(); });
+  document.querySelector('#backProjects')?.addEventListener('click', () => { selectedProjectId = null; projectDetailTab = 'overview'; render(); });
 
   document.querySelector('#closePlan')?.addEventListener('click', () => { planningTaskId = null; render(); });
   document.querySelector('#cancelPlan')?.addEventListener('click', () => { planningTaskId = null; render(); });
@@ -3380,19 +3397,125 @@ function bindEvents() {
 }
 
 function bindDragAndDrop() {
-  let dragged = null;
+  let draggedTask = null;
+
+  // Roadmap : glisser-déposer des tâches (comportement existant conservé).
   document.querySelectorAll('.planning-card').forEach(card => {
-    card.addEventListener('dragstart', () => { dragged = card.dataset.task; card.classList.add('dragging'); });
+    card.addEventListener('dragstart', () => {
+      draggedTask = card.dataset.task;
+      card.classList.add('dragging');
+    });
     card.addEventListener('dragend', () => card.classList.remove('dragging'));
   });
+
   document.querySelectorAll('[data-dropzone]').forEach(zone => {
-    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      zone.classList.add('drag-over');
+    });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', e => {
       e.preventDefault();
       zone.classList.remove('drag-over');
-      if (dragged) { moveTask(dragged, zone.dataset.dropzone); render(); }
+      if (draggedTask) {
+        moveTask(draggedTask, zone.dataset.dropzone);
+        render();
+      }
     });
+  });
+
+  const clearProjectTargets = () => {
+    document.querySelectorAll('.project-tree-row.drag-target, .project-drop-before.drag-target, .project-root-drop.drag-target')
+      .forEach(el => el.classList.remove('drag-target'));
+  };
+
+  // Projets : le déplacement réel passe par une RPC Supabase qui contrôle
+  // les boucles, les droits et la limite de 3 niveaux.
+  document.querySelectorAll('[data-project-tree-row][draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      draggedProjectId = row.dataset.projectTreeRow;
+      row.classList.add('dragging-project');
+      try {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', draggedProjectId || '');
+      } catch {}
+    });
+
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging-project');
+      draggedProjectId = null;
+      clearProjectTargets();
+    });
+  });
+
+  document.querySelectorAll('[data-project-nest]').forEach(target => {
+    target.addEventListener('dragover', e => {
+      if (!draggedProjectId) return;
+      const targetId = target.dataset.projectNest;
+      if (!targetId || targetId === draggedProjectId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      target.classList.add('drag-target');
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+    });
+
+    target.addEventListener('dragleave', e => {
+      if (!target.contains(e.relatedTarget)) target.classList.remove('drag-target');
+    });
+
+    target.addEventListener('drop', e => {
+      if (!draggedProjectId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const movingId = draggedProjectId;
+      const parentId = target.dataset.projectNest;
+      clearProjectTargets();
+      draggedProjectId = null;
+      if (movingId && parentId && movingId !== parentId) {
+        void moveProjectInTree(movingId, { parentId });
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-project-before]').forEach(zone => {
+    zone.addEventListener('dragover', e => {
+      if (!draggedProjectId) return;
+      const beforeId = zone.dataset.projectBefore;
+      if (!beforeId || beforeId === draggedProjectId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.add('drag-target');
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-target'));
+    zone.addEventListener('drop', e => {
+      if (!draggedProjectId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const movingId = draggedProjectId;
+      const beforeId = zone.dataset.projectBefore;
+      clearProjectTargets();
+      draggedProjectId = null;
+      if (movingId && beforeId && movingId !== beforeId) {
+        void moveProjectInTree(movingId, { beforeId });
+      }
+    });
+  });
+
+  const rootDrop = document.querySelector('[data-project-root-drop]');
+  rootDrop?.addEventListener('dragover', e => {
+    if (!draggedProjectId) return;
+    e.preventDefault();
+    rootDrop.classList.add('drag-target');
+  });
+  rootDrop?.addEventListener('dragleave', () => rootDrop.classList.remove('drag-target'));
+  rootDrop?.addEventListener('drop', e => {
+    if (!draggedProjectId) return;
+    e.preventDefault();
+    const movingId = draggedProjectId;
+    clearProjectTargets();
+    draggedProjectId = null;
+    void moveProjectInTree(movingId, { parentId:null });
   });
 }
 
