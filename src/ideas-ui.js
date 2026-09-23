@@ -134,7 +134,8 @@
 
     if (ui.view === 'top') {
       rows.sort((a,b) =>
-        Number(b.vote_count || 0) - Number(a.vote_count || 0)
+        Number(b.like_count || 0) - Number(a.like_count || 0)
+        || Number(a.dislike_count || 0) - Number(b.dislike_count || 0)
         || new Date(b.updated_at) - new Date(a.updated_at)
       );
     } else if (ui.view === 'review') {
@@ -244,9 +245,11 @@
   }
 
   function renderCard(item) {
-    const voteCount = Number(item.vote_count || 0);
+    const likeCount = Number(item.like_count || 0);
+    const dislikeCount = Number(item.dislike_count || 0);
+    const neutralCount = Number(item.neutral_count || 0);
     const threshold = Number(item.vote_threshold || 1);
-    const progress = Math.min(100, Math.round((voteCount / Math.max(1, threshold)) * 100));
+    const progress = Math.min(100, Math.round((likeCount / Math.max(1, threshold)) * 100));
     return `
       <article class="idea-card status-${esc(item.status)}">
         <header>
@@ -258,9 +261,6 @@
             <button class="idea-title" data-idea-open="${esc(item.idea_id)}">${esc(item.title)}</button>
             <small>Par ${esc(item.author_display_name || 'Équipe')} · ${esc(formatDate(item.created_at))}</small>
           </div>
-          <button class="idea-vote ${item.voted_by_me ? 'active' : ''}" data-idea-vote="${esc(item.idea_id)}" aria-pressed="${item.voted_by_me ? 'true' : 'false'}">
-            👍 <b>${voteCount}</b>
-          </button>
         </header>
 
         ${item.description ? `<p class="idea-description">${esc(item.description)}</p>` : ''}
@@ -276,12 +276,24 @@
           <span class="idea-origin">${esc(ORIGIN[item.origin] || item.origin)}</span>
         </div>
 
-        <div class="idea-vote-progress" title="Seuil automatique : ${threshold} votes">
+        <div class="idea-vote-choices compact">
+          <button class="${item.current_vote === 'like' ? 'active like' : 'like'}" data-idea-vote-choice="like" data-idea-id="${esc(item.idea_id)}" title="J’aime">
+            👍 <b>${likeCount}</b>
+          </button>
+          <button class="${item.current_vote === 'dislike' ? 'active dislike' : 'dislike'}" data-idea-vote-choice="dislike" data-idea-id="${esc(item.idea_id)}" title="J’aime pas">
+            👎 <b>${dislikeCount}</b>
+          </button>
+          <button class="${item.current_vote === 'neutral' ? 'active neutral' : 'neutral'}" data-idea-vote-choice="neutral" data-idea-id="${esc(item.idea_id)}" title="Je ne me prononce pas">
+            ➖ <b>${neutralCount}</b>
+          </button>
+        </div>
+
+        <div class="idea-vote-progress" title="Seuil automatique : ${threshold} J’aime">
           <i style="width:${progress}%"></i>
         </div>
 
         <footer>
-          <span>🗳 ${voteCount}/${threshold}</span>
+          <span>👍 ${likeCount}/${threshold} pour étudier</span>
           <span>💬 ${Number(item.comment_count || 0)}</span>
           <span>🔗 ${Number(item.resource_count || 0)}</span>
           <button class="idea-open-btn" data-idea-open="${esc(item.idea_id)}">Ouvrir →</button>
@@ -509,13 +521,30 @@
 
             <section class="idea-section">
               <div class="idea-section-title">
-                <div><h3>Votes</h3><small>Seuil automatique : ${Number(idea.vote_threshold || 1)} votes</small></div>
-                <button class="idea-vote ${idea.voted_by_me ? 'active' : ''}" data-idea-vote="${esc(idea.idea_id)}">👍 ${idea.voted_by_me ? 'Retirer mon vote' : 'Voter'} · ${Number(idea.vote_count || 0)}</button>
+                <div>
+                  <h3>Votes</h3>
+                  <small>Seuls les 👍 J’aime comptent pour le seuil automatique : ${Number(idea.like_count || 0)}/${Number(idea.vote_threshold || 1)}</small>
+                </div>
               </div>
+
+              <div class="idea-vote-choices detail">
+                <button class="${idea.current_vote === 'like' ? 'active like' : 'like'}" data-idea-vote-choice="like" data-idea-id="${esc(idea.idea_id)}">
+                  <span>👍</span><strong>J’aime</strong><b>${Number(idea.like_count || 0)}</b>
+                </button>
+                <button class="${idea.current_vote === 'dislike' ? 'active dislike' : 'dislike'}" data-idea-vote-choice="dislike" data-idea-id="${esc(idea.idea_id)}">
+                  <span>👎</span><strong>J’aime pas</strong><b>${Number(idea.dislike_count || 0)}</b>
+                </button>
+                <button class="${idea.current_vote === 'neutral' ? 'active neutral' : 'neutral'}" data-idea-vote-choice="neutral" data-idea-id="${esc(idea.idea_id)}">
+                  <span>➖</span><strong>Je ne me prononce pas</strong><b>${Number(idea.neutral_count || 0)}</b>
+                </button>
+              </div>
+
               <div class="idea-voters">
-                ${votes.length ? votes.map(v => `
-                  <span><b>${esc(v.initials || '')}</b>${esc(v.display_name || 'Membre')} ✓</span>
-                `).join('') : '<small>Aucun vote pour le moment.</small>'}
+                ${votes.length ? votes.map(v => {
+                  const icon = v.vote_value === 'like' ? '👍' : v.vote_value === 'dislike' ? '👎' : '➖';
+                  const label = v.vote_value === 'like' ? 'J’aime' : v.vote_value === 'dislike' ? 'J’aime pas' : 'Neutre';
+                  return `<span class="vote-${esc(v.vote_value || 'neutral')}"><b>${esc(v.initials || '')}</b>${esc(v.display_name || 'Membre')} · ${icon} ${label}</span>`;
+                }).join('') : '<small>Aucune position pour le moment.</small>'}
               </div>
             </section>
 
@@ -573,7 +602,9 @@
               <div><dt>Statut</dt><dd>${esc(STATUS[idea.status] || idea.status)}</dd></div>
               <div><dt>Auteur</dt><dd>${esc(idea.author_display_name || 'Équipe')}</dd></div>
               <div><dt>Origine</dt><dd>${esc(ORIGIN[idea.origin] || idea.origin)}</dd></div>
-              <div><dt>Votes</dt><dd>${Number(idea.vote_count || 0)} / ${Number(idea.vote_threshold || 1)}</dd></div>
+              <div><dt>Soutiens</dt><dd>👍 ${Number(idea.like_count || 0)} / ${Number(idea.vote_threshold || 1)}</dd></div>
+              <div><dt>Oppositions</dt><dd>👎 ${Number(idea.dislike_count || 0)}</dd></div>
+              <div><dt>Neutres</dt><dd>➖ ${Number(idea.neutral_count || 0)}</dd></div>
               <div><dt>Commentaires</dt><dd>${Number(idea.comment_count || 0)}</dd></div>
               <div><dt>Mise à jour</dt><dd>${esc(formatDate(idea.updated_at))}</dd></div>
             </dl>
@@ -740,9 +771,9 @@
     }
   }
 
-  async function toggleVote(ideaId) {
+  async function setVote(ideaId, vote) {
     try {
-      await api().toggleVote(ideaId);
+      await api().setVote(ideaId, vote);
       await loadList(true);
       if (ui.detailId === ideaId) await loadDetail(ideaId, true);
     } catch (error) {
@@ -891,7 +922,7 @@
   function bind() {
     root.querySelector('[data-idea-new]')?.addEventListener('click', () => openForm());
     root.querySelectorAll('[data-idea-open]').forEach(el => el.addEventListener('click', () => openDetail(el.dataset.ideaOpen)));
-    root.querySelectorAll('[data-idea-vote]').forEach(el => el.addEventListener('click', () => toggleVote(el.dataset.ideaVote)));
+    root.querySelectorAll('[data-idea-vote-choice]').forEach(el => el.addEventListener('click', () => setVote(el.dataset.ideaId, el.dataset.ideaVoteChoice)));
     root.querySelectorAll('[data-idea-view]').forEach(el => el.addEventListener('click', () => { ui.view = el.dataset.ideaView; render(); }));
     root.querySelector('[data-ideas-retry]')?.addEventListener('click', () => loadList());
 
