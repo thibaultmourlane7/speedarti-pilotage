@@ -1680,7 +1680,7 @@ function render() {
     case 'assistant': content = renderAssistant(); break;
     case 'planning': content = renderPlanning(); break;
     case 'projects': content = renderProjects(); break;
-    case 'ideas': content = '<div id="ideasPageMount"></div>'; break;
+    case 'ideas': content = '<div id="ideasPageMount"><div class="ideas-empty">Chargement du module Idées…</div></div>'; break;
     case 'calendar': content = renderCalendar(); break;
     case 'documents': content = renderDocuments(); break;
     case 'activity': content = renderActivity(); break;
@@ -1690,8 +1690,85 @@ function render() {
   }
   app.innerHTML = layout(content);
   bindEvents();
-  if (currentPage === 'ideas' && window.PILOTAGE_IDEAS_UI?.mount) {
-    void window.PILOTAGE_IDEAS_UI.mount({
+  if (currentPage === 'ideas') {
+    void mountIdeasPage();
+  }
+}
+
+function loadExternalScript(src, marker) {
+  if (marker && window[marker]) return Promise.resolve();
+  const existing = [...document.scripts].find(script => script.src && script.src.includes(src.split('?')[0]));
+  if (existing && existing.dataset.loaded === 'true') return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const script = existing || document.createElement('script');
+    const onLoad = () => {
+      script.dataset.loaded = 'true';
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error('Impossible de charger ' + src));
+    };
+    const cleanup = () => {
+      script.removeEventListener('load', onLoad);
+      script.removeEventListener('error', onError);
+    };
+
+    script.addEventListener('load', onLoad, { once:true });
+    script.addEventListener('error', onError, { once:true });
+
+    if (!existing) {
+      script.src = src;
+      script.async = false;
+      document.body.appendChild(script);
+    } else if (marker && window[marker]) {
+      cleanup();
+      resolve();
+    } else {
+      // Le tag existe mais son ancien chargement n'a pas fourni le module.
+      // On charge une copie versionnée pour éviter une page blanche silencieuse.
+      cleanup();
+      const retry = document.createElement('script');
+      retry.src = src + (src.includes('?') ? '&' : '?') + 'retry=' + Date.now();
+      retry.async = false;
+      retry.addEventListener('load', resolve, { once:true });
+      retry.addEventListener('error', () => reject(new Error('Impossible de recharger ' + src)), { once:true });
+      document.body.appendChild(retry);
+    }
+  });
+}
+
+async function ensureIdeasAssets() {
+  if (!document.querySelector('link[href*="ideas.css"]')) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = './src/ideas.css?v=20260923-3';
+    document.head.appendChild(link);
+  }
+
+  if (!window.PILOTAGE_IDEAS) {
+    await loadExternalScript('./src/pilotage-ideas.js?v=20260923-2', 'PILOTAGE_IDEAS');
+  }
+  if (!window.PILOTAGE_IDEAS_UI) {
+    await loadExternalScript('./src/ideas-ui.js?v=20260923-4', 'PILOTAGE_IDEAS_UI');
+  }
+
+  if (!window.PILOTAGE_IDEAS || !window.PILOTAGE_IDEAS_UI) {
+    throw new Error('Le module Idées ne s’est pas initialisé.');
+  }
+}
+
+async function mountIdeasPage() {
+  const mount = document.querySelector('#ideasPageMount');
+  if (!mount) return;
+
+  try {
+    await ensureIdeasAssets();
+    if (currentPage !== 'ideas' || !document.querySelector('#ideasPageMount')) return;
+
+    await window.PILOTAGE_IDEAS_UI.mount({
       state,
       currentUser: state.currentUser,
       isAdmin: isAdmin(),
@@ -1708,6 +1785,18 @@ function render() {
       },
       refreshRemote: () => window.PILOTAGE_REMOTE?.refreshFromSupabase?.()
     });
+  } catch (error) {
+    console.error('Module Idées', error);
+    const currentMount = document.querySelector('#ideasPageMount');
+    if (currentMount) {
+      currentMount.innerHTML = `
+        <div class="ideas-error">
+          <strong>Le module Idées n’a pas pu se charger</strong>
+          <p>${esc(error?.message || 'Erreur inconnue')}</p>
+          <button class="secondary-btn" id="retryIdeasMount">Réessayer</button>
+        </div>`;
+      currentMount.querySelector('#retryIdeasMount')?.addEventListener('click', mountIdeasPage);
+    }
   }
 }
 
