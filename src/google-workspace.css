@@ -368,3 +368,107 @@
   font-size: 11px;
   font-weight: 900;
 }
+
+.gw-invitees {
+  margin: 0;
+  padding: 9px;
+  border: 1px solid #d9e3ef;
+  border-radius: 12px;
+  background: #f9fbfe;
+}
+.gw-invitees legend {
+  padding: 0 5px;
+  color: #66758b;
+  font-size: 11px;
+  font-weight: 900;
+}
+.gw-invitee-option {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 9px !important;
+  padding: 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.gw-invitee-option:hover { background: #eef5ff; }
+.gw-invitee-option input {
+  width: auto !important;
+  margin: 0;
+}
+.gw-invitee-avatar {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: #e8f1ff;
+  color: #1263b5;
+  font-size: 10px;
+  font-weight: 900;
+}
+.gw-invitee-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.gw-invitee-copy strong { font-size: 12px; }
+.gw-invitee-copy small {
+  color: #77869a;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gw-field-help {
+  margin-top: -5px;
+  color: #7c8a9c;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.gw-last-meet {
+  align-items: flex-start;
+}
+.gw-last-meet-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.gw-last-meet-main code {
+  margin-top: 6px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  background: #fff;
+  color: #31506f;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.gw-last-meet-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gw-last-meet-actions a {
+  text-decoration: none;
+  border-radius: 9px;
+  background: #1473e6;
+  color: #fff;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+.gw-meet-link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 700px) {
+  .gw-last-meet { flex-direction: column; }
+  .gw-last-meet-actions { width: 100%; flex-direction: row; }
+  .gw-last-meet-actions > * { flex: 1; }
+}
