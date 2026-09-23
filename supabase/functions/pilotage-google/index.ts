@@ -627,7 +627,13 @@ Deno.serve(async (req: Request) => {
         .select("google_email,access_token_expires_at,updated_at,scope")
         .eq("owner_member_id", member.id).maybeSingle();
       const granted = grantedScopeSet(cred?.scope);
-      const missingScopes = REQUIRED_SCOPES.filter(scope => !granted.has(scope));
+      const hasEmailIdentity =
+        granted.has("email")
+        || granted.has("https://www.googleapis.com/auth/userinfo.email");
+      const missingScopes = REQUIRED_SCOPES.filter(scope => {
+        if (scope === "email") return !hasEmailIdentity;
+        return !granted.has(scope);
+      });
       return response({
         configured: cfg.configured,
         integrations: integrations || [],
