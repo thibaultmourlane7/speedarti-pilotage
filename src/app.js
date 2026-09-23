@@ -2044,7 +2044,7 @@ function renderDocumentModal() {
     <header><div><small>RÉFÉRENCE DRIVE</small><h2>Lier un document</h2></div><button class="icon-btn" id="closeDocumentModal">×</button></header>
     <div class="form-grid">
       <label class="form-field form-field-full"><span>Nom</span><input id="documentName" type="text" placeholder="Ex. Cahier fonctionnel V2" maxlength="140" /></label>
-      <label class="form-field form-field-full"><span>Projet</span><select id="documentProject">${isAdmin() ? '<option value="">Sans projet</option>' : '<option value="">Sélectionner un projet</option>'}${state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="form-field form-field-full"><span>Projet</span><select id="documentProject">${isAdmin() ? '<option value="">Sans projet</option>' : '<option value="">Sélectionner un projet</option>'}${state.projects.map(p => `<option value="${p.id}" ${documentModalProjectId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
       <label class="form-field"><span>Type</span><select id="documentType"><option>Document</option><option>Tableur</option><option>PDF</option><option>Plan</option></select></label>
       <label class="form-field form-field-full"><span>Lien Google Drive (optionnel)</span><input id="documentUrl" type="url" placeholder="https://drive.google.com/..." /></label>
     </div>
