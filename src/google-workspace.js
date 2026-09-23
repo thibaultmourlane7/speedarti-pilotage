@@ -720,12 +720,18 @@
         else refreshMeetings(true);
       }
     }));
-    root.querySelectorAll('[data-gw-tab]').forEach(el => el.addEventListener('click', () => {
+    root.querySelectorAll('[data-gw-tab]').forEach(el => el.addEventListener('click', async () => {
       ui.tab = el.dataset.gwTab;
       ui.form = null;
       render();
-      if (ui.tab === 'chat') syncChat(true);
-      else refreshMeetings(true);
+      if (ui.tab === 'chat') {
+        syncChat(true);
+      } else {
+        await refreshStatus();
+        if (ui.status?.account && !ui.status?.needs_reconnect) {
+          refreshMeetings(true);
+        }
+      }
     }));
     root.querySelector('[data-gw-action="connect-google"]')?.addEventListener('click', connectGoogle);
     root.querySelectorAll('[data-gw-action="sync-chat"],[data-gw-action="sync-current"]').forEach(el => el.addEventListener('click', () => syncChat(false)));
