@@ -72,6 +72,7 @@ const navItems = [
   ['assistant', 'ChatGPT', '✦'],
   ['planning', 'Planification', '↔'],
   ['projects', 'Projets', '▦'],
+  ['ideas', 'Idées', '💡'],
   ['calendar', 'Agenda', '□'],
   ['documents', 'Documents', '▤'],
   ['activity', 'Activité', '≋'],
@@ -1530,6 +1531,7 @@ function renderTaskModal() {
   const due = dateKey(existing?.dueAt);
   return `<div class="modal-backdrop" id="taskModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
     <header><div><small>${existing ? 'MODIFIER LA TÂCHE' : 'NOUVELLE TÂCHE'}</small><h2>${existing ? esc(existing.title) : 'Ajouter une tâche'}</h2></div><button class="icon-btn" id="closeTaskModal">×</button></header>
+    ${existing?.sourceIdeaId ? `<button class="task-origin-idea" data-open-idea-origin="${esc(existing.sourceIdeaId)}">💡 Origine : idée SpeedArti →</button>` : ''}
     <div class="form-grid">
       <label class="form-field form-field-full"><span>Titre</span><input id="taskTitle" type="text" value="${esc(existing?.title || '')}" placeholder="Ex. Tester la nouvelle intégration" maxlength="120" /></label>
       <label class="form-field form-field-full"><span>Projet</span><select id="taskProject"><option value="">Sans projet</option>${state.projects.filter(p => !p.archived || p.id === defaultProject).map(p => `<option value="${p.id}" ${defaultProject === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
@@ -1677,6 +1679,7 @@ function render() {
     case 'assistant': content = renderAssistant(); break;
     case 'planning': content = renderPlanning(); break;
     case 'projects': content = renderProjects(); break;
+    case 'ideas': content = '<div id="ideasPageMount"></div>'; break;
     case 'calendar': content = renderCalendar(); break;
     case 'documents': content = renderDocuments(); break;
     case 'activity': content = renderActivity(); break;
@@ -1686,6 +1689,25 @@ function render() {
   }
   app.innerHTML = layout(content);
   bindEvents();
+  if (currentPage === 'ideas' && window.PILOTAGE_IDEAS_UI?.mount) {
+    void window.PILOTAGE_IDEAS_UI.mount({
+      state,
+      currentUser: state.currentUser,
+      isAdmin: isAdmin(),
+      openProject: projectId => {
+        selectedProjectId = projectId;
+        currentPage = 'projects';
+        render();
+      },
+      openTask: taskId => openTaskEditor(taskId),
+      navigateIdeas: () => {
+        currentPage = 'ideas';
+        selectedProjectId = null;
+        render();
+      },
+      refreshRemote: () => window.PILOTAGE_REMOTE?.refreshFromSupabase?.()
+    });
+  }
 }
 
 function navigate(page) {
@@ -2543,6 +2565,16 @@ function bindEvents() {
   document.querySelector('#openTeamWorkload')?.addEventListener('click', openTeamWorkload);
   document.querySelectorAll('[data-plan]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openPlanning(el.dataset.plan); }));
   document.querySelectorAll('[data-edit-task]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openTaskEditor(el.dataset.editTask); }));
+  document.querySelectorAll('[data-open-idea-origin]').forEach(el => el.addEventListener('click', e => {
+    e.preventDefault();
+    const ideaId = el.dataset.openIdeaOrigin;
+    taskModalOpen = false;
+    taskEditId = null;
+    currentPage = 'ideas';
+    selectedProjectId = null;
+    render();
+    setTimeout(() => window.PILOTAGE_IDEAS_UI?.openIdea?.(ideaId), 80);
+  }));
   document.querySelectorAll('[data-edit-project]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); openProjectModal(el.dataset.editProject); }));
   document.querySelectorAll('[data-team-target]').forEach(el => el.addEventListener('click', e => {
     e.preventDefault();
