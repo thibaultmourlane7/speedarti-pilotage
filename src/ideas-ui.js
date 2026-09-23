@@ -44,6 +44,7 @@
     modal: null,
     editId: null,
     toast: null,
+    prefillProjectKey: null,
     realtime: null,
     refreshTimer: null
   };
@@ -356,8 +357,8 @@
 
   function renderIdeaForm() {
     const item = ui.editId ? ui.items.find(x => x.idea_id === ui.editId) : null;
-    const association = item?.association_type || 'none';
-    const projectKey = item?.project_client_key || '';
+    const association = item?.association_type || (ui.prefillProjectKey ? 'project' : 'none');
+    const projectKey = item?.project_client_key || ui.prefillProjectKey || '';
     const taskKey = item?.task_client_key || '';
 
     return `
@@ -733,6 +734,7 @@
     ui.editId = null;
     ui.detail = null;
     ui.detailId = null;
+    ui.prefillProjectKey = null;
     render();
   }
 
@@ -764,6 +766,7 @@
       const edited = ui.editId;
       ui.modal = null;
       ui.editId = null;
+      ui.prefillProjectKey = null;
       await loadList(true);
       showToast(edited ? 'Idée mise à jour' : 'Idée créée', 'Les informations sont enregistrées dans Pilotage.');
     } catch (error) {
@@ -999,7 +1002,22 @@
   window.PILOTAGE_IDEAS_UI = Object.freeze({
     mount,
     openIdea,
-    openNew: () => openForm(),
+    openNew: () => {
+      ui.prefillProjectKey = null;
+      openForm();
+    },
+    openNewForProject: projectClientKey => {
+      ui.prefillProjectKey = projectClientKey || null;
+      ui.project = projectClientKey || 'all';
+      openForm();
+    },
+    openForProject: projectClientKey => {
+      ui.project = projectClientKey || 'all';
+      ui.modal = null;
+      ui.detail = null;
+      ui.detailId = null;
+      render();
+    },
     refresh: () => loadList(true)
   });
 })();
