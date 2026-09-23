@@ -283,7 +283,7 @@ async function main(req: Request) {
     changesRes,
     ideasRes
   ] = await Promise.all([
-    supabase.from("projects").select("id,client_key,name,owner_id,status,priority,progress,blocker,next_action,archived_at,updated_at").is("archived_at", null).order("updated_at", { ascending: false }).limit(40),
+    supabase.from("projects").select("id,client_key,name,owner_id,status,priority,progress,manual_progress,parent_project_id,tree_sort_order,blocker,next_action,archived_at,updated_at").is("archived_at", null).order("updated_at", { ascending: false }).limit(40),
     supabase.from("project_members").select("project_id,member_id,project_role"),
     supabase.from("tasks").select("id,client_key,title,project_id,assigned_to_member_id,status,priority,scheduled_for,due_at,planning_status,planning_bucket,completed_at,updated_at").order("updated_at", { ascending: false }).limit(120),
     supabase.from("team_members").select("id,client_key,display_name,team_role,role,active").eq("active", true),
@@ -298,21 +298,32 @@ async function main(req: Request) {
 
   const team = teamRes.data || [];
   const byMemberId = new Map(team.map((m: any) => [m.id, m]));
-  const projects = (projectsRes.data || []).map((p: any) => ({
-    client_key: p.client_key,
-    name: p.name,
-    owner: byMemberId.get(p.owner_id)?.client_key || null,
-    members: (projectMembersRes.data || [])
-      .filter((pm: any) => pm.project_id === p.id)
-      .map((pm: any) => byMemberId.get(pm.member_id)?.client_key)
-      .filter(Boolean),
-    status: p.status,
-    priority: p.priority,
-    progress: p.progress,
-    blocker: p.blocker,
-    next_action: p.next_action,
-    updated_at: p.updated_at
-  }));
+  const rawProjects = projectsRes.data || [];
+  const projects = rawProjects.map((p: any) => {
+    const children = rawProjects.filter((child: any) => child.parent_project_id === p.id);
+    const parent = p.parent_project_id
+      ? rawProjects.find((candidate: any) => candidate.id === p.parent_project_id)
+      : null;
+
+    return {
+      client_key: p.client_key,
+      name: p.name,
+      owner: byMemberId.get(p.owner_id)?.client_key || null,
+      members: (projectMembersRes.data || [])
+        .filter((pm: any) => pm.project_id === p.id)
+        .map((pm: any) => byMemberId.get(pm.member_id)?.client_key)
+        .filter(Boolean),
+      parent_project_client_key: parent?.client_key || null,
+      child_project_client_keys: children.map((child: any) => child.client_key),
+      progress_mode: children.length ? "automatic_tree_tasks" : "manual",
+      status: p.status,
+      priority: p.priority,
+      progress: p.progress,
+      blocker: p.blocker,
+      next_action: p.next_action,
+      updated_at: p.updated_at
+    };
+  });
 
   const projectById = new Map((projectsRes.data || []).map((p: any) => [p.id, p.client_key]));
   const tasks = (tasksRes.data || []).map((t: any) => ({
@@ -385,6 +396,7 @@ async function main(req: Request) {
     "Les mises à jour de routine peuvent utiliser les outils. La clôture d'un projet doit TOUJOURS utiliser request_project_completion, jamais update_project.",
     "Ne modifie jamais les participants d'un projet, les rôles utilisateurs, les accès, ni les validations finales.",
     "Les idées sont des signaux de roadmap : tu peux les lire, les comparer et les signaler, mais tu ne dois jamais les valider, les rejeter, changer leur statut ni les transformer en tâche automatiquement. Les votes ont trois positions (J’aime, J’aime pas, neutre) et seuls les J’aime comptent pour le seuil automatique À étudier.",
+    "Les projets peuvent former une arborescence de 3 niveaux maximum. Si progress_mode vaut automatic_tree_tasks, la progression est calculée par Pilotage à partir des tâches de tout le sous-arbre : ne tente jamais de la modifier manuellement.",
     "Pour les comptes rendus, crée seulement un brouillon pour l'utilisateur connecté.",
     "Réponds en français, de façon courte et opérationnelle.",
     "Quand tu exécutes une action, indique clairement ce qui a été fait.",
