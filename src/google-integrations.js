@@ -158,6 +158,7 @@
     },
     linkChatSpaceProject: (spaceId, projectClientKey = null) =>
       invoke('link_chat_space_project', { space_id: spaceId, project_client_key: projectClientKey }),
+    listMeetingInvitees: () => invoke('list_meeting_invitees'),
     createMeetEvent: payload => {
       trace(TAGS.MEET_CREATE, 'Création réunion Google Meet');
       return invoke('create_meet_event', payload);
