@@ -7,7 +7,7 @@ const JSON_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
 };
 
-const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.2" };
+const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.3" };
 const SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"];
 const REQUIRED_SCOPE = "email";
 
@@ -19,18 +19,28 @@ function authIssuer() {
   return `${envUrl()}/auth/v1`;
 }
 
-function directResource() {
-  return `${envUrl()}/functions/v1/pilotage-mcp`;
+function directResource(req?: Request) {
+  const base = `${envUrl()}/functions/v1/pilotage-mcp`;
+  if (!req) return base;
+  return new URL(req.url).pathname.endsWith("/mcp") ? base + "/mcp" : base;
 }
 
-function v2Resource() {
-  return `${envUrl()}/functions/v1/pilotage-mcp-v2`;
+function v2Resource(req?: Request) {
+  const base = `${envUrl()}/functions/v1/pilotage-mcp-v2`;
+  if (!req) return base;
+  return new URL(req.url).pathname.endsWith("/mcp") ? base + "/mcp" : base;
 }
 
 function publicResource(req: Request) {
   const forwarded = String(req.headers.get("x-pilotage-public-resource") || "").replace(/\/$/, "");
-  if (forwarded === directResource() || forwarded === v2Resource()) return forwarded;
-  return directResource();
+  const validForwarded = [
+    v2Resource(),
+    v2Resource() + "/mcp",
+    directResource(),
+    directResource() + "/mcp"
+  ];
+  if (validForwarded.includes(forwarded)) return forwarded;
+  return directResource(req);
 }
 
 function resourceMetadataUrl(req: Request) {
@@ -196,26 +206,32 @@ function oauthSecurity() {
 }
 
 function profileTool(useOauth: boolean) {
+  const security = useOauth ? oauthSecurity() : undefined;
   return {
     name: "getPilotageProfile",
     title: "Profil SpeedArti Pilotage connecté",
     description: "Retourne l'identité Pilotage du compte connecté afin de vérifier que ChatGPT travaille pour la bonne personne.",
-    ...(useOauth ? { securitySchemes: oauthSecurity() } : {}),
+    ...(security ? { securitySchemes: security } : {}),
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {}
     },
-    _meta: { "openai/profile": true }
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    _meta: {
+      "openai/profile": true,
+      ...(security ? { securitySchemes: security } : {})
+    }
   };
 }
 
 function listContextTool(useOauth: boolean) {
+  const security = useOauth ? oauthSecurity() : undefined;
   return {
     name: "listPilotageContext",
     title: "Lister le contexte SpeedArti Pilotage",
     description: "Retourne les projets et tâches accessibles au membre connecté. À utiliser avant toute association à un projet ou une tâche afin de ne jamais inventer d'identifiant.",
-    ...(useOauth ? { securitySchemes: oauthSecurity() } : {}),
+    ...(security ? { securitySchemes: security } : {}),
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -225,6 +241,10 @@ function listContextTool(useOauth: boolean) {
           description: "Inclure les tâches déjà terminées. Par défaut false."
         }
       }
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    _meta: {
+      ...(security ? { securitySchemes: security } : {})
     }
   };
 }
@@ -265,11 +285,12 @@ function reportTool() {
 }
 
 function toolsCatalog(auth: any) {
-  const oauth = auth?.kind === "oauth";
+  // V16.3 — ChatGPT doit pouvoir découvrir les outils AVANT l'association OAuth.
+  const oauth = !auth || auth?.kind === "oauth";
   const tools: any[] = [profileTool(oauth), listContextTool(oauth)];
 
   // L'écriture historique reste disponible seulement pour l'authentification
-  // agent-token existante. La première validation ChatGPT OAuth est lecture seule.
+  // agent-token existante afin de ne pas casser le bridge Claude.
   if (auth?.kind === "legacy") tools.push(reportTool());
   return tools;
 }
@@ -392,7 +413,7 @@ async function callIngest(auth: any, token: string, args: any) {
     metadata: {
       ...(args?.metadata || {}),
       source_bridge: "pilotage-mcp",
-      mcp_server_version: "16.2"
+      mcp_server_version: "16.3"
     },
     dry_run: args?.dry_run === true
   };
@@ -408,6 +429,20 @@ async function callIngest(auth: any, token: string, args: any) {
 
   const data = await res.json().catch(() => ({ error: "Réponse non JSON de pilotage-ai-ingest." }));
   return { ok: res.ok, status: res.status, data };
+}
+
+function oauthToolAuthError(req: Request, id: unknown) {
+  const challenge = `Bearer resource_metadata="${resourceMetadataUrl(req)}", error="invalid_token", error_description="Connecte ton compte SpeedArti Pilotage pour continuer."`;
+  return response(rpcResult(id, {
+    content: [{
+      type: "text",
+      text: "Connexion SpeedArti Pilotage requise avant de lire les données."
+    }],
+    isError: true,
+    _meta: {
+      "mcp/www_authenticate": [challenge]
+    }
+  }));
 }
 
 function protectedResourceMetadata(req: Request) {
@@ -444,10 +479,12 @@ Deno.serve(async (req: Request) => {
     auth: { persistSession: false, autoRefreshToken: false }
   });
 
+  // Pendant initialize/tools/list, l'identité peut être absente :
+  // la découverte des outils doit fonctionner avant le login OAuth.
   const auth = await resolveAuth(db, req);
-  if (!auth) return unauthorized(req);
 
   if (req.method === "GET") {
+    if (!auth) return unauthorized(req);
     return response({
       ok: true,
       server: SERVER_INFO,
@@ -476,9 +513,11 @@ Deno.serve(async (req: Request) => {
       protocolVersion,
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER_INFO,
-      instructions: auth.kind === "oauth"
-        ? "Connexion ChatGPT SpeedArti Pilotage en lecture seule. Vérifie d'abord getPilotageProfile puis utilise listPilotageContext."
-        : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Ne remonte que du travail réellement effectué."
+      instructions: !auth
+        ? "Deux outils de lecture SpeedArti Pilotage sont visibles. Ils demanderont la connexion OAuth à leur premier appel."
+        : auth.kind === "oauth"
+          ? "Connexion ChatGPT SpeedArti Pilotage en lecture seule. Vérifie d'abord getPilotageProfile puis utilise listPilotageContext."
+          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Ne remonte que du travail réellement effectué."
     }), 200, { "Mcp-Session-Id": crypto.randomUUID() });
   }
 
@@ -492,9 +531,11 @@ Deno.serve(async (req: Request) => {
     return response(rpcResult(id, {
       supportedVersions: SUPPORTED_VERSIONS,
       capabilities: { tools: { listChanged: false } },
-      instructions: auth.kind === "oauth"
-        ? "Connexion OAuth SpeedArti Pilotage lecture seule."
-        : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche.",
+      instructions: !auth
+        ? "Outils de lecture visibles ; OAuth requis à l'appel."
+        : auth.kind === "oauth"
+          ? "Connexion OAuth SpeedArti Pilotage lecture seule."
+          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche.",
       ttlMs: 60000,
       cacheScope: "private"
     }));
@@ -511,6 +552,10 @@ Deno.serve(async (req: Request) => {
   if (method === "tools/call") {
     const name = payload?.params?.name;
     const args = payload?.params?.arguments || {};
+
+    if (!auth) {
+      return oauthToolAuthError(req, id);
+    }
 
     if (name === "getPilotageProfile") {
       const profile = {
