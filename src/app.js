@@ -2456,15 +2456,21 @@ function createTaskFromForm() {
   render();
 }
 
-function openProjectModal(editId = null) {
+function openProjectModal(editId = null, parentId = null) {
   projectModalOpen = true;
   projectEditId = editId;
+  projectModalParentId = editId ? null : (parentId || null);
   taskModalOpen = false;
   taskEditId = null;
   documentModalOpen = false;
+  documentModalProjectId = null;
   planningTaskId = null;
   notificationOpen = false;
-  trace(editId ? TAGS.PROJECT_EDITOR : TAGS.PROJECT_MODAL, editId ? 'Ouverture édition projet' : 'Ouverture formulaire projet', { projectId: editId });
+  trace(
+    editId ? TAGS.PROJECT_EDITOR : TAGS.PROJECT_MODAL,
+    editId ? 'Ouverture édition projet' : parentId ? 'Ouverture création sous-projet' : 'Ouverture formulaire projet',
+    { projectId: editId, parentProjectId: projectModalParentId }
+  );
   render();
   requestAnimationFrame(() => document.querySelector('#projectName')?.focus());
 }
@@ -2472,6 +2478,7 @@ function openProjectModal(editId = null) {
 function closeProjectModal() {
   projectModalOpen = false;
   projectEditId = null;
+  projectModalParentId = null;
   render();
 }
 
@@ -2482,63 +2489,159 @@ function createProjectFromForm() {
     document.querySelector('#projectName')?.focus();
     return;
   }
+
   const owner = document.querySelector('#projectOwner')?.value || state.currentUser.id;
   const priority = document.querySelector('#projectPriority')?.value || 'medium';
   const status = document.querySelector('#projectStatus')?.value || 'in_progress';
-  const progress = Number(document.querySelector('#projectProgress')?.value || 0);
   const blocker = document.querySelector('#projectBlocker')?.value.trim() || '';
   const nextAction = document.querySelector('#projectNextAction')?.value.trim() || 'À définir';
 
   if (projectEditId) {
     const existing = project(projectEditId);
     if (!existing) return;
+
+    const hasChildren = projectHasChildren(existing.id);
+    const progress = hasChildren
+      ? Number(existing.progress || 0)
+      : Number(document.querySelector('#projectProgress')?.value || 0);
     const oldOwner = existing.owner;
     const oldMembers = projectMemberIds(existing);
     const members = selectedProjectMembers(owner, oldMembers);
     const oldProgress = Number(existing.progress || 0);
     const requestedCompletion = status === 'completed' && existing.status !== 'completed';
     const savedStatus = requestedCompletion ? existing.status : status;
-    const savedProgress = progress;
-    Object.assign(existing, { name, owner, priority, status:savedStatus, progress:savedProgress, blocker, nextAction, members, updatedAt:new Date().toISOString() });
-    addActivity({ projectId: existing.id, text: `Projet mis à jour · ${savedProgress} % · ${statusLabels[savedStatus]}`, internalTag: TAGS.PROJECT_EDIT });
-    if (requestedCompletion) { const request = queueProjectCompletion(existing.id, { sourceType:'manual', requestedBy:state.currentUser.name || teamName(state.currentUser.id), note:'Demande effectuée depuis la fiche projet' }); if (request) approvalRequestId = request.id; }
-    if (oldOwner !== owner) addActivity({ projectId: existing.id, text: `Responsable projet : ${teamName(owner)}`, internalTag: TAGS.PROJECT_OWNER });
+
+    Object.assign(existing, {
+      name,
+      owner,
+      priority,
+      status:savedStatus,
+      progress,
+      manualProgress: hasChildren ? Number(existing.manualProgress ?? existing.progress ?? 0) : progress,
+      blocker,
+      nextAction,
+      members,
+      updatedAt:new Date().toISOString()
+    });
+
+    addActivity({
+      projectId: existing.id,
+      text: `Projet mis à jour · ${progress} % · ${statusLabels[savedStatus]}`,
+      internalTag: TAGS.PROJECT_EDIT
+    });
+
+    if (requestedCompletion) {
+      const request = queueProjectCompletion(existing.id, {
+        sourceType:'manual',
+        requestedBy:state.currentUser.name || teamName(state.currentUser.id),
+        note:'Demande effectuée depuis la fiche projet'
+      });
+      if (request) approvalRequestId = request.id;
+    }
+
+    if (oldOwner !== owner) {
+      addActivity({ projectId: existing.id, text: `Responsable projet : ${teamName(owner)}`, internalTag: TAGS.PROJECT_OWNER });
+    }
+
     if ([...oldMembers].sort().join('|') !== [...members].sort().join('|')) {
       addActivity({ projectId: existing.id, text: `Participants projet : ${members.map(teamName).join(', ')}`, internalTag: TAGS.PROJECT_MEMBERS });
       trace(TAGS.PROJECT_MULTISELECT, 'Participants projet modifiés', { projectId:existing.id, members });
     }
-    if (oldProgress !== progress) addActivity({ projectId: existing.id, text: `Progression : ${oldProgress} % → ${progress} %`, internalTag: TAGS.PROJECT_PROGRESS });
-    persist(TAGS.PROJECT_EDIT, 'Projet modifié', { projectId: existing.id, owner, members, priority, status:existing.status, progress:existing.progress, blocker });
+
+    if (!hasChildren && oldProgress !== progress) {
+      addActivity({ projectId: existing.id, text: `Progression : ${oldProgress} % → ${progress} %`, internalTag: TAGS.PROJECT_PROGRESS });
+    }
+
+    persist(TAGS.PROJECT_EDIT, 'Projet modifié', {
+      projectId: existing.id,
+      owner,
+      members,
+      priority,
+      status:existing.status,
+      progress:existing.progress,
+      automaticProgress:hasChildren,
+      blocker
+    });
   } else {
+    const parentId = projectModalParentId || null;
+    const parent = project(parentId);
+
+    if (parentId && (!parent || projectDepthLocal(parentId) >= 2)) {
+      window.alert('Impossible de créer ce sous-projet : 3 niveaux maximum.');
+      return;
+    }
+
+    const progress = Number(document.querySelector('#projectProgress')?.value || 0);
     const id = crypto.randomUUID();
-    const members = selectedProjectMembers(owner, [state.currentUser.id, owner]);
-    const newProject = { id, name, owner, members, status, priority, progress, blocker, nextAction, updatedAt:new Date().toISOString() };
-    state.projects.unshift(newProject);
-    addActivity({ projectId:id, text:`Nouveau projet créé : ${name}`, internalTag:TAGS.PROJECT_CREATE });
-    persist(TAGS.PROJECT_CREATE, 'Projet créé manuellement', { projectId:id, owner, members, priority, status });
+    const members = selectedProjectMembers(
+      owner,
+      parent ? projectMemberIds(parent) : [state.currentUser.id, owner]
+    );
+    const siblings = projectChildren(parentId);
+    const treeSortOrder = Math.max(0, ...siblings.map(x => Number(x.treeSortOrder || 0))) + 1000;
+
+    const newProject = {
+      id,
+      name,
+      owner,
+      members,
+      status,
+      priority,
+      progress,
+      manualProgress:progress,
+      parentProjectId:parentId,
+      treeSortOrder,
+      blocker,
+      nextAction,
+      updatedAt:new Date().toISOString()
+    };
+
+    state.projects.push(newProject);
+    addActivity({
+      projectId:id,
+      text: parent
+        ? `Nouveau sous-projet créé : ${name} · dans ${parent.name}`
+        : `Nouveau projet créé : ${name}`,
+      internalTag:TAGS.PROJECT_CREATE
+    });
+    persist(TAGS.PROJECT_CREATE, parent ? 'Sous-projet créé manuellement' : 'Projet créé manuellement', {
+      projectId:id,
+      parentProjectId:parentId,
+      owner,
+      members,
+      priority,
+      status
+    });
+
     selectedProjectId = id;
+    projectDetailTab = 'overview';
     currentPage = 'projects';
   }
+
   projectModalOpen = false;
   projectEditId = null;
+  projectModalParentId = null;
   render();
 }
 
-function openDocumentModal() {
+function openDocumentModal(projectId = null) {
   documentModalOpen = true;
+  documentModalProjectId = projectId || null;
   taskModalOpen = false;
   taskEditId = null;
   projectModalOpen = false;
   projectEditId = null;
+  projectModalParentId = null;
   planningTaskId = null;
   notificationOpen = false;
-  trace(TAGS.DOCUMENT_MODAL, 'Ouverture liaison document Drive');
+  trace(TAGS.DOCUMENT_MODAL, 'Ouverture liaison document Drive', { projectId:documentModalProjectId });
   render();
   requestAnimationFrame(() => document.querySelector('#documentName')?.focus());
 }
 
 function closeDocumentModal() {
   documentModalOpen = false;
+  documentModalProjectId = null;
   render();
 }
 
@@ -2559,6 +2662,7 @@ function createDocumentFromForm() {
   addActivity({ projectId, text:`Document lié : ${name}`, internalTag:TAGS.DOCUMENT_LINK });
   persist(TAGS.DOCUMENT_LINK, 'Référence Drive ajoutée', { documentId:id, projectId, type, hasUrl:Boolean(url) });
   documentModalOpen = false;
+  documentModalProjectId = null;
   render();
 }
 
