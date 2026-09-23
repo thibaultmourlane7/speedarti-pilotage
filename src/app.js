@@ -1935,27 +1935,68 @@ function renderTaskModal() {
 
 function renderProjectModal() {
   const existing = projectEditId ? project(projectEditId) : null;
-  const owner = existing?.owner || state.currentUser.id;
+  const parent = existing?.parentProjectId ? project(existing.parentProjectId) : project(projectModalParentId);
+  const owner = existing?.owner || parent?.owner || state.currentUser.id;
   const priority = existing?.priority || 'medium';
   const status = existing?.status || 'in_progress';
+  const hasChildren = existing ? projectHasChildren(existing.id) : false;
   const progress = Number(existing?.progress || 0);
+  const defaultMembers = existing
+    ? projectMemberIds(existing)
+    : parent
+      ? projectMemberIds(parent)
+      : [owner];
+
   return `<div class="modal-backdrop" id="projectModalBackdrop"></div><div class="modal-card form-modal" role="dialog" aria-modal="true">
-    <header><div><small>${existing ? 'MODIFIER LE PROJET' : 'NOUVEAU PROJET'}</small><h2>${existing ? esc(existing.name) : 'Créer un projet'}</h2></div><button class="icon-btn" id="closeProjectModal">×</button></header>
+    <header>
+      <div>
+        <small>${existing ? 'MODIFIER LE PROJET' : parent ? 'NOUVEAU SOUS-PROJET' : 'NOUVEAU PROJET'}</small>
+        <h2>${existing ? esc(existing.name) : parent ? `Créer dans ${esc(parent.name)}` : 'Créer un projet'}</h2>
+      </div>
+      <button class="icon-btn" id="closeProjectModal">×</button>
+    </header>
+
     <div class="form-grid">
+      ${parent ? `
+        <div class="form-field form-field-full project-parent-location">
+          <span>Emplacement</span>
+          <div><b>📁</b><strong>${esc(parent.name)}</strong><small>Sous-projet · niveau ${projectDepthLocal(parent.id) + 2}/3</small></div>
+        </div>`
+        : existing ? `
+        <div class="form-field form-field-full project-parent-location">
+          <span>Emplacement</span>
+          <div><b>${existing.parentProjectId ? '📁' : '▣'}</b><strong>${esc(existing.parentProjectId ? project(existing.parentProjectId)?.name || 'Projet parent' : 'Niveau principal')}</strong><small>Pour changer l’emplacement, utilise le glisser-déposer dans la liste Projets.</small></div>
+        </div>` : ''}
+
       <label class="form-field form-field-full"><span>Nom du projet</span><input id="projectName" type="text" value="${esc(existing?.name || '')}" placeholder="Ex. Module SAV fournisseurs" maxlength="120" /></label>
-      <div class="form-field form-field-full"><span>Responsable</span>${isAdmin() ? teamPicker('projectOwner', owner) : `<input type="hidden" id="projectOwner" value="${state.currentUser.id}" /><div class="owner-pill">${esc(teamName(state.currentUser.id))}</div>`}</div>
+
+      <div class="form-field form-field-full">
+        <span>Responsable</span>
+        ${isAdmin()
+          ? teamPicker('projectOwner', owner)
+          : `<input type="hidden" id="projectOwner" value="${state.currentUser.id}" /><div class="owner-pill">${esc(teamName(state.currentUser.id))}</div>`}
+      </div>
+
       ${isAdmin()
-        ? `<div class="form-field form-field-full"><span>Participants — plusieurs choix possibles</span>${projectMemberPicker(projectMemberIds(existing || { owner, members:[owner] }), owner)}<p class="form-note">Le responsable est toujours inclus automatiquement. Tu peux sélectionner Thibault, Anne-Sophie et Guillaume sur le même projet.</p></div>`
+        ? `<div class="form-field form-field-full"><span>Participants — plusieurs choix possibles</span>${projectMemberPicker(defaultMembers, owner)}<p class="form-note">Le responsable est toujours inclus automatiquement. Un sous-projet peut conserver la même équipe que son projet parent.</p></div>`
         : existing
-          ? `<div class="form-field form-field-full"><span>Participants</span><div>${projectMemberIds(existing).map(id => `<span class="owner-pill">${esc(teamName(id))}</span>`).join(' ')}</div><p class="form-note">La composition de l’équipe projet est gérée par la Direction. Tes droits sur les tâches restent inchangés.</p></div>`
+          ? `<div class="form-field form-field-full"><span>Participants</span><div>${projectMemberIds(existing).map(id => `<span class="owner-pill">${esc(teamName(id))}</span>`).join(' ')}</div><p class="form-note">La composition de l’équipe projet est gérée par la Direction.</p></div>`
           : ''}
+
       <label class="form-field"><span>Priorité</span><select id="projectPriority">${Object.entries(priorityLabels).map(([value,label]) => `<option value="${value}" ${value === priority ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="form-field"><span>État</span><select id="projectStatus">${Object.entries(statusLabels).filter(([value]) => existing || value !== 'completed').map(([value,label]) => `<option value="${value}" ${value === status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-      <label class="form-field form-field-full range-field"><span>Progression <output id="projectProgressValue">${progress} %</output></span><input id="projectProgress" type="range" min="0" max="100" step="5" value="${progress}" /></label>
+
+      <label class="form-field form-field-full range-field ${hasChildren ? 'range-field-automatic' : ''}">
+        <span>Progression <output id="projectProgressValue">${progress} %</output></span>
+        <input id="projectProgress" type="range" min="0" max="100" step="5" value="${progress}" ${hasChildren ? 'disabled' : ''} />
+        ${hasChildren ? '<small>Calcul automatique : tâches terminées / tâches totales de toute l’arborescence.</small>' : '<small>Cette progression reste manuelle tant que le projet ne contient aucun sous-projet.</small>'}
+      </label>
+
       <label class="form-field form-field-full"><span>Blocage actuel</span><input id="projectBlocker" type="text" value="${esc(existing?.blocker || '')}" placeholder="Laisser vide s’il n’y a aucun blocage" maxlength="180" /></label>
       <label class="form-field form-field-full"><span>Prochaine action</span><input id="projectNextAction" type="text" value="${esc(existing?.nextAction || '')}" placeholder="Ex. Définir le cahier fonctionnel" maxlength="160" /></label>
     </div>
-    <footer><button class="secondary-btn" id="cancelProjectModal">Annuler</button><button class="primary-btn" id="saveProject">${existing ? 'Enregistrer' : 'Créer le projet'}</button></footer>
+
+    <footer><button class="secondary-btn" id="cancelProjectModal">Annuler</button><button class="primary-btn" id="saveProject">${existing ? 'Enregistrer' : parent ? 'Créer le sous-projet' : 'Créer le projet'}</button></footer>
   </div>`;
 }
 
