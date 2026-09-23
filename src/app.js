@@ -910,7 +910,7 @@ function renderCalendar() {
       const inner = `<time>${calendarView === 'today' ? formatTime(e.at) : `${dateKey(e.at).slice(8,10)}/${dateKey(e.at).slice(5,7)} ${formatTime(e.at)}`}</time><div><strong>${esc(e.title)}</strong><small>${esc(e.label)}</small></div>`;
       if (e.taskId && e.source !== 'google') return `<button class="agenda-row source-speedarti ${e.label === 'Échéance' ? 'source-deadline' : ''}" data-edit-task="${e.taskId}">${inner}</button>`;
       const canLink = e.source === 'google' && (e.ownerId === state.currentUser.id || isAdmin());
-      return `<div class="agenda-row source-google">${inner}${canLink ? `<button class="text-button agenda-link-btn" data-calendar-link="${e.id}">${e.projectId || e.taskId ? 'Modifier le lien' : 'Associer'}</button>` : ''}${e.url ? `<button class="text-button" data-open-url="${esc(e.url)}">Ouvrir</button>` : ''}</div>`;
+      return `<div class="agenda-row source-google">${inner}${canLink ? `<button class="text-button agenda-link-btn" data-calendar-link="${e.id}">${e.projectId || e.taskId ? 'Modifier le lien' : 'Associer'}</button>` : ''}${e.meetUrl ? `<button class="text-button meet-join-btn" data-open-url="${esc(e.meetUrl)}">📹 Rejoindre</button>` : ''}${e.url ? `<button class="text-button" data-open-url="${esc(e.url)}">Agenda</button>` : ''}</div>`;
     }).join('') || '<div class="empty-line">Aucun élément dans cette période.</div>'}</div></section>`;
 }
 
