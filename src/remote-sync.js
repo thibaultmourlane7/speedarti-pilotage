@@ -509,6 +509,9 @@
         url: row.html_link || '',
         status: row.status || null,
         organizerEmail: row.organizer_email || null,
+        meetUrl: row.meet_url || null,
+        conferenceId: row.conference_id || null,
+        attendees: Array.isArray(row.attendees) ? row.attendees : [],
         lastSyncedAt: row.last_synced_at || null
       };
     });
