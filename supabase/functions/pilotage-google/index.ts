@@ -10,9 +10,6 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const CALENDAR_LIST_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
-const CHAT_SPACES_SCOPE = "https://www.googleapis.com/auth/chat.spaces.readonly";
-const CHAT_MESSAGES_READ_SCOPE = "https://www.googleapis.com/auth/chat.messages.readonly";
-const CHAT_MESSAGES_CREATE_SCOPE = "https://www.googleapis.com/auth/chat.messages.create";
 const REQUIRED_SCOPES = [
   "openid",
   "email",
@@ -20,9 +17,6 @@ const REQUIRED_SCOPES = [
   CALENDAR_SCOPE,
   CALENDAR_EVENTS_SCOPE,
   CALENDAR_LIST_SCOPE,
-  CHAT_SPACES_SCOPE,
-  CHAT_MESSAGES_READ_SCOPE,
-  CHAT_MESSAGES_CREATE_SCOPE,
 ];
 const OAUTH_SCOPES = REQUIRED_SCOPES.join(" ");
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -109,7 +103,7 @@ async function ensureIntegration(db: ReturnType<typeof dbClient>, memberId: stri
   return data;
 }
 async function setGoogleConnected(db: ReturnType<typeof dbClient>, memberId: string, email: string | null) {
-  for (const provider of ["google_drive", "google_calendar", "google_chat"] as const) {
+  for (const provider of ["google_drive", "google_calendar"] as const) {
     const integration = await ensureIntegration(db, memberId, provider);
     await db.from("integrations").update({
       status: "connected",
@@ -628,7 +622,7 @@ Deno.serve(async (req: Request) => {
   try {
     if (action === "status") {
       const { data: integrations } = await db.from("integrations").select("provider,status,configuration,last_synced_at,last_error")
-        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar", "google_chat"]);
+        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar"]);
       const { data: cred } = await db.from("google_credentials")
         .select("google_email,access_token_expires_at,updated_at,scope")
         .eq("owner_member_id", member.id).maybeSingle();
@@ -679,7 +673,7 @@ Deno.serve(async (req: Request) => {
     if (action === "disconnect") {
       await db.from("google_credentials").delete().eq("owner_member_id", member.id);
       await db.from("integrations").update({ status: "disconnected", last_error: null, updated_at: new Date().toISOString() })
-        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar", "google_chat"]);
+        .eq("owner_member_id", member.id).in("provider", ["google_drive", "google_calendar"]);
       return response({ ok: true });
     }
 
