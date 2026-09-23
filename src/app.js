@@ -950,6 +950,64 @@ function renderPlanning() {
       }).join('')}
     </div>`;
 }
+function renderProjectTreeNode(p, visibleSet, depth = 0) {
+  const children = projectChildren(p.id).filter(child => visibleSet.has(child.id));
+  const hasChildren = children.length > 0;
+  const collapsed = collapsedProjectIds.has(p.id);
+  const summary = hasChildren ? projectTreeTaskSummary(p.id) : taskCompletionSummary(p.id);
+  const progress = projectEffectiveProgress(p);
+  const pending = pendingCompletionRequest(p.id);
+  const movable = canManageProject(p) && !p.archived;
+
+  return `
+    <div class="project-tree-node" style="--tree-depth:${depth}">
+      <div class="project-drop-before" data-project-before="${p.id}" aria-hidden="true"></div>
+      <div class="project-row project-tree-row ${projectTreeMoveBusy ? 'tree-busy' : ''}"
+           data-project-tree-row="${p.id}"
+           data-project-nest="${p.id}"
+           ${movable ? 'draggable="true"' : ''}>
+        <div class="project-tree-controls">
+          ${hasChildren
+            ? `<button class="project-tree-toggle" data-project-toggle="${p.id}" title="${collapsed ? 'Déplier' : 'Replier'}">${collapsed ? '›' : '⌄'}</button>`
+            : '<span class="project-tree-toggle placeholder">·</span>'}
+          <span class="project-drag-handle" title="${movable ? 'Glisser pour déplacer' : 'Déplacement réservé au responsable'}">⋮⋮</span>
+        </div>
+
+        <button class="project-main project-open-area" data-project-open="${p.id}">
+          <div class="project-title-line">
+            <strong>${hasChildren ? '📁 ' : '▣ '}${esc(p.name)}</strong>
+            ${statusBadge(p.status)}
+            ${priorityBadge(p.priority)}
+            ${pending ? '<span class="badge status-to_validate">Validation</span>' : ''}
+            ${hasChildren ? `<span class="project-tree-count">${children.length} sous-projet${children.length > 1 ? 's' : ''}</span>` : ''}
+          </div>
+          <small>
+            ${esc(teamName(p.owner))} ·
+            ${projectMemberIds(p).length} participant${projectMemberIds(p).length > 1 ? 's' : ''} ·
+            ${summary.done}/${summary.total} tâches terminées
+            ${hasChildren ? ' · arborescence' : ''}
+          </small>
+        </button>
+
+        <div class="project-progress">
+          <span>${progress} % ${hasChildren ? '<em>auto</em>' : ''}</span>
+          <div class="progress"><i style="width:${progress}%"></i></div>
+        </div>
+
+        <div class="project-context">
+          <small>${p.blocker ? 'Blocage' : 'Prochaine action'}</small>
+          <span>${esc(p.blocker || p.nextAction || 'À définir')}</span>
+        </div>
+
+        <div class="project-nest-hint">Déposer dans ce projet</div>
+      </div>
+
+      ${hasChildren && !collapsed
+        ? `<div class="project-tree-children">${children.map(child => renderProjectTreeNode(child, visibleSet, depth + 1)).join('')}</div>`
+        : ''}
+    </div>`;
+}
+
 function renderProjects() {
   if (selectedProjectId) return renderProjectDetail(selectedProjectId);
 
@@ -961,47 +1019,205 @@ function renderProjects() {
     ['completed', 'Terminés'],
     ['archived', 'Archivés']
   ];
-  const visibleProjects = state.projects.filter(p => {
-    if (projectFilter === 'archived') return Boolean(p.archived);
-    if (p.archived) return false;
-    if (projectFilter === 'all') return true;
-    if (projectFilter === 'blocked') return p.status === 'blocked' || Boolean(p.blocker);
-    return p.status === projectFilter;
-  });
 
-  return pageHeader('Projets', isAdmin() ? 'Vue simple de l’état de tous les projets' : 'Projets dont tu es responsable ou participant', '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>') + `
+  const visibleSet = visibleProjectTreeSet();
+  const roots = projectTreeRoots(visibleSet);
+
+  return pageHeader(
+    'Projets',
+    isAdmin()
+      ? 'Organisation en arborescence · glisse un projet sur un autre pour créer un sous-projet'
+      : 'Projets accessibles · 3 niveaux maximum',
+    '<button class="primary-btn" data-action="new-project">+ Nouveau projet</button>'
+  ) + `
     <div class="tabs">
       ${filters.map(([value,label]) => `<button class="${projectFilter === value ? 'active' : ''}" data-project-filter="${value}">${label}</button>`).join('')}
     </div>
-    <div class="project-list">
-      ${visibleProjects.map(p => { const summary=taskCompletionSummary(p.id); const pending=pendingCompletionRequest(p.id); return `<button class="project-row" data-project="${p.id}">
-        <div class="project-main"><div class="project-title-line"><strong>${esc(p.name)}</strong>${statusBadge(p.status)}${priorityBadge(p.priority)}${pending ? '<span class="badge status-to_validate">Validation</span>' : ''}</div><small>${esc(teamName(p.owner))} · ${projectMemberIds(p).length} participant${projectMemberIds(p).length > 1 ? 's' : ''} · ${summary.done}/${summary.total} tâches terminées</small></div>
-        <div class="project-progress"><span>${p.progress} %</span><div class="progress"><i style="width:${p.progress}%"></i></div></div>
-        <div class="project-context"><small>${p.blocker ? 'Blocage' : 'Prochaine action'}</small><span>${esc(p.blocker || p.nextAction || 'À définir')}</span></div>
-      </button>`; }).join('') || `<div class="empty-state">Aucun projet dans cette vue.</div>`}
+
+    <div class="project-tree-help">
+      <span>↕</span>
+      <div>
+        <strong>Glisser-déposer</strong>
+        <small>Dépose un projet <b>sur</b> un autre pour l'imbriquer, ou sur le trait entre deux projets pour le réordonner. Maximum 3 niveaux.</small>
+      </div>
+    </div>
+
+    <div class="project-root-drop" data-project-root-drop>
+      ↰ Déposer ici pour remettre le projet au niveau principal
+    </div>
+
+    <div class="project-list project-tree-list">
+      ${roots.map(p => renderProjectTreeNode(p, visibleSet, 0)).join('') || '<div class="empty-state">Aucun projet dans cette vue.</div>'}
     </div>`;
 }
+
 function renderProjectDetail(id) {
   const p = project(id);
   if (!p) { selectedProjectId = null; return renderProjects(); }
+
   const tasks = state.tasks.filter(t => t.projectId === id);
   const docs = allDocumentRefs().filter(d => d.projectId === id);
-  const activities = state.activity.filter(a => a.projectId === id).slice(0,5);
-  return `
-    <button class="back-btn" id="backProjects">← Projets</button>
-    ${pageHeader(p.name, teamName(p.owner), `<div class="header-actions">${canManageProject(p) ? (p.archived ? `<button class="secondary-btn" data-restore-project="${p.id}">Restaurer</button>` : `<button class="secondary-btn" data-edit-project="${p.id}">Modifier</button><button class="archive-btn" data-archive-project="${p.id}">Archiver</button>`) : ''}</div>`)}
-    ${p.archived ? `<div class="archive-banner"><strong>Projet archivé</strong><span>Il reste consultable, mais n’apparaît plus dans le pilotage actif.</span></div>` : ''}
-    <div class="project-detail-head"><div>${statusBadge(p.status)} ${priorityBadge(p.priority)} <span class="owner-pill">${esc(teamName(p.owner))}</span></div><strong>${p.progress} %</strong></div>
-    <div class="progress large"><i style="width:${p.progress}%"></i></div>
+  const activities = state.activity.filter(a => a.projectId === id).slice(0,20);
+  const children = projectChildren(id).filter(child => !child.archived);
+  const ancestors = projectAncestorChain(id);
+  const subtree = projectTreeTaskSummary(id);
+  const progress = projectEffectiveProgress(p);
+  const hasChildren = children.length > 0;
+  const pending = pendingCompletionRequest(p.id);
+
+  const breadcrumbs = `
+    <div class="project-breadcrumbs">
+      <button id="backProjects">Projets</button>
+      ${ancestors.map(parent => `<span>›</span><button data-project-open="${parent.id}">${esc(parent.name)}</button>`).join('')}
+      <span>›</span><strong>${esc(p.name)}</strong>
+    </div>`;
+
+  const quickAdd = !p.archived ? `
+    <div class="project-add-bar">
+      <strong>+ Ajouter dans ce projet</strong>
+      <div>
+        <button data-action="add-project-task" data-project-id="${p.id}">✓ Tâche</button>
+        <button data-action="add-subproject" data-project-id="${p.id}" ${projectDepthLocal(p.id) >= 2 ? 'disabled title="3 niveaux maximum"' : ''}>📁 Sous-projet</button>
+        <button data-action="link-project-document" data-project-id="${p.id}">▤ Document</button>
+        <button data-action="add-project-idea" data-project-id="${p.id}">💡 Idée</button>
+      </div>
+    </div>` : '';
+
+  const overviewTab = `
     <section class="section info-grid">
-      <div class="${p.blocker ? 'info-blocker' : ''}"><small>Blocage actuel</small><strong>${esc(p.blocker || 'Aucun blocage')}</strong>${p.blocker && !p.archived && canManageProject(p) ? `<button class="clear-blocker-btn" data-clear-blocker="${p.id}">Lever le blocage</button>` : ''}</div>
+      <div class="${p.blocker ? 'info-blocker' : ''}">
+        <small>Blocage actuel</small>
+        <strong>${esc(p.blocker || 'Aucun blocage')}</strong>
+        ${p.blocker && !p.archived && canManageProject(p) ? `<button class="clear-blocker-btn" data-clear-blocker="${p.id}">Lever le blocage</button>` : ''}
+      </div>
       <div><small>Prochaine action</small><strong>${esc(p.nextAction || 'Non définie')}</strong></div>
-      <div><small>Participants</small><strong>${projectMemberIds(p).map(id => esc(teamName(id))).join(' · ') || 'Aucun'}</strong></div>
+      <div><small>Participants</small><strong>${projectMemberIds(p).map(memberId => esc(teamName(memberId))).join(' · ') || 'Aucun'}</strong></div>
     </section>
-    ${pendingCompletionRequest(p.id) ? `<section class="approval-banner"><div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la Direction n’a pas décidé.</small></div>${isAdmin() ? `<button class="primary-btn" data-approval="${pendingCompletionRequest(p.id).id}">Examiner</button>` : `<span class="owner-pill">En attente Direction</span>`}</section>` : ''}
-    <section class="section"><div class="section-title"><h2>Tâches</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div><div class="task-list">${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche.</div>'}</div></section>
-    <section class="section"><div class="section-title"><h2>Documents</h2><button class="text-button" data-page="documents">Voir tout →</button></div><div class="doc-list">${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('') || '<div class="empty-line">Aucun document lié.</div>'}</div></section>
-    <section class="section"><div class="section-title"><h2>Activité récente</h2></div><div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div></section>`;
+
+    ${hasChildren ? `
+      <section class="section project-tree-summary">
+        <div class="section-title">
+          <div><h2>Arborescence</h2><small>La progression du projet principal est calculée automatiquement sur toutes les tâches ci-dessous.</small></div>
+          <button class="text-button" data-project-tab="subprojects">Voir les sous-projets →</button>
+        </div>
+        <div class="project-tree-stats">
+          <span><b>${children.length}</b><small>Sous-projets directs</small></span>
+          <span><b>${projectDescendantIds(p.id).length}</b><small>Sous-projets au total</small></span>
+          <span><b>${subtree.done}/${subtree.total}</b><small>Tâches terminées</small></span>
+          <span><b>${progress}%</b><small>Progression automatique</small></span>
+        </div>
+        <div class="project-child-preview">
+          ${children.slice(0,5).map(child => {
+            const childProgress = projectEffectiveProgress(child);
+            return `<button data-project-open="${child.id}"><span>📁</span><div><strong>${esc(child.name)}</strong><small>${taskCompletionSummary(child.id).done}/${taskCompletionSummary(child.id).total} tâches directes</small></div><b>${childProgress}%</b></button>`;
+          }).join('')}
+        </div>
+      </section>`
+      : `
+      <section class="section project-leaf-progress-note">
+        <span>◉</span>
+        <div><strong>Projet sans sous-projet</strong><small>Sa progression reste manuelle. Dès qu'il contient un sous-projet, la barre devient automatique à partir des tâches de l'arborescence.</small></div>
+      </section>`}
+
+    ${pending ? `
+      <section class="approval-banner">
+        <div><span>Validation requise</span><strong>Passage du projet en Terminé</strong><small>Le projet reste dans son état actuel tant que la Direction n'a pas décidé.</small></div>
+        ${isAdmin() ? `<button class="primary-btn" data-approval="${pending.id}">Examiner</button>` : '<span class="owner-pill">En attente Direction</span>'}
+      </section>` : ''}
+  `;
+
+  const subprojectsTab = `
+    <section class="section">
+      <div class="section-title">
+        <div><h2>Sous-projets</h2><small>${children.length} directement dans ce projet</small></div>
+        ${projectDepthLocal(p.id) < 2 && !p.archived ? `<button class="text-button" data-action="add-subproject" data-project-id="${p.id}">+ Ajouter un sous-projet</button>` : ''}
+      </div>
+      <div class="project-subproject-list">
+        ${children.length ? children.map(child => {
+          const childSummary = projectTreeTaskSummary(child.id);
+          const childProgress = projectEffectiveProgress(child);
+          return `
+            <button data-project-open="${child.id}">
+              <span class="subproject-folder">📁</span>
+              <div><strong>${esc(child.name)}</strong><small>${childSummary.done}/${childSummary.total} tâches · ${projectChildren(child.id).length} sous-projet${projectChildren(child.id).length > 1 ? 's' : ''}</small></div>
+              <div class="subproject-progress"><b>${childProgress}%</b><div class="progress"><i style="width:${childProgress}%"></i></div></div>
+              <em>Ouvrir →</em>
+            </button>`;
+        }).join('') : '<div class="empty-line">Aucun sous-projet. Utilise “+ Ajouter un sous-projet” ou glisse un projet dans celui-ci.</div>'}
+      </div>
+    </section>`;
+
+  const tasksTab = `
+    <section class="section">
+      <div class="section-title"><h2>Tâches de ce projet</h2><button class="text-button" data-action="add-project-task" data-project-id="${p.id}">+ Ajouter</button></div>
+      <div class="task-list">
+        ${tasks.map(t => `<div class="task-row"><button class="checkbox ${t.status === 'completed' ? 'checked' : ''}" data-complete="${t.id}"></button><button class="task-main task-main-button" data-edit-task="${t.id}"><strong>${esc(t.title)}</strong><small>${statusLabels[t.status]} · ${esc(teamName(t.assignedTo))}${t.scheduledFor ? ` · ${formatDate(t.scheduledFor)}` : ''}</small></button>${priorityBadge(t.priority)}<button class="quick-status-btn" data-task-status="${t.id}">${taskQuickLabel(t)}</button><button class="row-action" data-edit-task="${t.id}">Modifier</button></div>`).join('') || '<div class="empty-line">Aucune tâche directe dans ce projet.</div>'}
+      </div>
+    </section>`;
+
+  const documentsTab = `
+    <section class="section">
+      <div class="section-title"><h2>Documents de ce projet</h2><button class="text-button" data-action="link-project-document" data-project-id="${p.id}">+ Lier un document</button></div>
+      <div class="doc-list">
+        ${docs.map(d => `<div class="doc-row"><span class="doc-icon ${d.type === 'Tableur' ? 'doc-sheet' : 'doc-document'}">▤</span><div><strong>${esc(d.name)}</strong><small>${esc(d.source)}</small></div>${d.url ? `<button class="text-button" data-open-doc="${d.id}">Ouvrir →</button>` : '<span class="demo-label">Référence</span>'}</div>`).join('') || '<div class="empty-line">Aucun document lié directement à ce projet.</div>'}
+      </div>
+    </section>`;
+
+  const ideasTab = `
+    <section class="section project-ideas-tab">
+      <div><span>💡</span><div><h2>Idées liées au projet</h2><p>Les idées restent gérées dans le module Idées, avec votes, commentaires et transformation en tâche.</p></div></div>
+      <div>
+        <button class="secondary-btn" data-action="open-project-ideas" data-project-id="${p.id}">Voir les idées liées</button>
+        <button class="primary-btn" data-action="add-project-idea" data-project-id="${p.id}">+ Nouvelle idée</button>
+      </div>
+    </section>`;
+
+  const activityTab = `
+    <section class="section">
+      <div class="section-title"><h2>Activité du projet</h2></div>
+      <div class="activity-list">${activities.map(renderActivityItem).join('') || '<div class="empty-line">Aucune activité récente.</div>'}</div>
+    </section>`;
+
+  const tabContent = {
+    overview: overviewTab,
+    subprojects: subprojectsTab,
+    tasks: tasksTab,
+    documents: documentsTab,
+    ideas: ideasTab,
+    activity: activityTab
+  }[projectDetailTab] || overviewTab;
+
+  return `
+    ${breadcrumbs}
+    ${pageHeader(
+      p.name,
+      hasChildren ? `${teamName(p.owner)} · projet principal / dossier` : teamName(p.owner),
+      `<div class="header-actions">${canManageProject(p) ? (p.archived ? `<button class="secondary-btn" data-restore-project="${p.id}">Restaurer</button>` : `<button class="secondary-btn" data-edit-project="${p.id}">Modifier</button><button class="archive-btn" data-archive-project="${p.id}">Archiver</button>`) : ''}</div>`
+    )}
+    ${p.archived ? '<div class="archive-banner"><strong>Projet archivé</strong><span>Il reste consultable, mais n’apparaît plus dans le pilotage actif.</span></div>' : ''}
+
+    <div class="project-detail-head">
+      <div>${statusBadge(p.status)} ${priorityBadge(p.priority)} <span class="owner-pill">${esc(teamName(p.owner))}</span>${hasChildren ? '<span class="project-auto-progress-badge">Progression auto</span>' : ''}</div>
+      <strong>${progress} %</strong>
+    </div>
+    <div class="progress large"><i style="width:${progress}%"></i></div>
+    ${hasChildren ? `<div class="project-progress-caption">${subtree.done}/${subtree.total} tâches terminées dans toute l'arborescence</div>` : ''}
+
+    ${quickAdd}
+
+    <div class="project-detail-tabs">
+      ${[
+        ['overview','Vue d’ensemble'],
+        ['subprojects',`Sous-projets (${children.length})`],
+        ['tasks',`Tâches (${tasks.length})`],
+        ['documents',`Documents (${docs.length})`],
+        ['ideas','Idées'],
+        ['activity','Activité']
+      ].map(([value,label]) => `<button class="${projectDetailTab === value ? 'active' : ''}" data-project-tab="${value}">${label}</button>`).join('')}
+    </div>
+
+    ${tabContent}
+  `;
 }
 
 function renderGoogleDrivePanel() {
