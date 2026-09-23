@@ -544,7 +544,20 @@ async function syncGoogleChat(
     .eq("integration_id", integration.id)
     .order("last_remote_message_at", { ascending: false, nullsFirst: false });
 
-  return { spaces: freshSpaces || [], unread_total: unreadTotal, new_messages: newMessages };
+  const projectIds = [...new Set((freshSpaces || []).map((s: any) => s.project_id).filter(Boolean))];
+  const { data: linkedProjects } = projectIds.length
+    ? await db.from("projects").select("id,client_key").in("id", projectIds)
+    : { data: [] };
+  const projectKeys = new Map((linkedProjects || []).map((p: any) => [p.id, p.client_key]));
+
+  return {
+    spaces: (freshSpaces || []).map((space: any) => ({
+      ...space,
+      project_client_key: space.project_id ? projectKeys.get(space.project_id) || null : null,
+    })),
+    unread_total: unreadTotal,
+    new_messages: newMessages
+  };
 }
 
 async function callback(req: Request, db: ReturnType<typeof dbClient>) {
@@ -988,7 +1001,18 @@ Deno.serve(async (req: Request) => {
         .eq("integration_id", integration.id)
         .order("last_remote_message_at", { ascending: false, nullsFirst: false });
       if (error) throw error;
-      return response({ ok: true, spaces: spaces || [] });
+      const projectIds = [...new Set((spaces || []).map((s: any) => s.project_id).filter(Boolean))];
+      const { data: linkedProjects } = projectIds.length
+        ? await db.from("projects").select("id,client_key").in("id", projectIds)
+        : { data: [] };
+      const projectKeys = new Map((linkedProjects || []).map((p: any) => [p.id, p.client_key]));
+      return response({
+        ok: true,
+        spaces: (spaces || []).map((space: any) => ({
+          ...space,
+          project_client_key: space.project_id ? projectKeys.get(space.project_id) || null : null,
+        }))
+      });
     }
 
     if (action === "list_chat_messages") {
