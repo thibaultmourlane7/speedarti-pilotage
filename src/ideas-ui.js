@@ -212,7 +212,7 @@
       <div class="ideas-tabs">
         ${[
           ['all','Toutes'],
-          ['top','Les plus votées'],
+          ['top','Les plus soutenues'],
           ['review','À étudier'],
           ['validated','Validées']
         ].map(([id,label]) => `<button class="${ui.view === id ? 'active' : ''}" data-idea-view="${id}">${label}</button>`).join('')}
