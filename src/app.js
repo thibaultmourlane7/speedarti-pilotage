@@ -1447,7 +1447,7 @@ function validateDailyReport(reportId) {
 }
 
 function renderMore() {
-  return pageHeader('Plus', 'Outils complémentaires') + `<div class="menu-list"><button data-page="assistant">ChatGPT Pilotage <span>✦</span></button><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
+  return pageHeader('Plus', 'Outils complémentaires') + `<div class="menu-list"><button data-page="assistant">ChatGPT Pilotage <span>✦</span></button><button data-page="ideas">Idées <span>💡</span></button><button data-page="reports">Comptes rendus <span>→</span></button><button data-page="documents">Documents <span>→</span></button><button data-page="activity">Activité <span>→</span></button></div>`;
 }
 
 function renderQuickActionModal() {
@@ -1458,6 +1458,7 @@ function renderQuickActionModal() {
     <div class="quick-action-grid">
       <button data-quick-action="task"><span>✓</span><div><strong>Nouvelle tâche</strong><small>Créer et assigner rapidement</small></div></button>
       <button data-quick-action="project"><span>▦</span><div><strong>Nouveau projet</strong><small>Créer un projet complet</small></div></button>
+      <button data-quick-action="idea"><span>💡</span><div><strong>Nouvelle idée</strong><small>Proposer une évolution et la soumettre au vote</small></div></button>
       <button data-quick-action="document"><span>▤</span><div><strong>Lier un document</strong><small>Référence Google Drive</small></div></button>
       <button data-quick-action="report"><span>☷</span><div><strong>Compte rendu manuel</strong><small>Ajouter le mini bilan du jour</small></div></button>
       <button data-quick-action="assistant"><span>✦</span><div><strong>ChatGPT Pilotage</strong><small>Analyser, créer ou mettre à jour</small></div></button>
@@ -2200,6 +2201,12 @@ function runQuickAction(action) {
   quickActionOpen = false;
   if (action === 'task') return openTaskModal();
   if (action === 'project') return openProjectModal();
+  if (action === 'idea') {
+    currentPage = 'ideas';
+    selectedProjectId = null;
+    render();
+    return setTimeout(() => window.PILOTAGE_IDEAS_UI?.openNew?.(), 80);
+  }
   if (action === 'document') return openDocumentModal();
   if (action === 'report') return openDailyReportModal();
   if (action === 'assistant') return navigate('assistant');
