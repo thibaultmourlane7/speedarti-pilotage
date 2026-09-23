@@ -5,7 +5,7 @@ const BASE_HEADERS = {
 };
 
 const UPSTREAM_BASE = "https://veovtygcolfsrjocrhsf.supabase.co/functions/v1/pilotage-mcp";
-const PUBLIC_RESOURCE = "https://veovtygcolfsrjocrhsf.supabase.co/functions/v1/pilotage-mcp-v2";
+const PUBLIC_RESOURCE_BASE = "https://veovtygcolfsrjocrhsf.supabase.co/functions/v1/pilotage-mcp-v2";
 
 function suffixFromIncoming(url: URL) {
   const marker = "/pilotage-mcp-v2";
@@ -28,7 +28,8 @@ Deno.serve(async (req: Request) => {
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
-  headers.set("x-pilotage-public-resource", PUBLIC_RESOURCE);
+  const publicResource = suffix === "/mcp" ? PUBLIC_RESOURCE_BASE + "/mcp" : PUBLIC_RESOURCE_BASE;
+  headers.set("x-pilotage-public-resource", publicResource);
   if (req.method === "POST" && !headers.has("content-type")) headers.set("content-type", "application/json");
 
   let raw: string | undefined;
