@@ -20,6 +20,7 @@
     meetError: '',
     toast: null,
     form: null,
+    lastMeet: null,
     booted: false,
     syncingChat: false,
     realtimeReady: false
@@ -354,6 +355,11 @@
         <button class="gw-primary" data-gw-action="open-request">Demander une réunion</button>
         <button class="gw-secondary" data-gw-action="open-meet">Créer un Meet</button>
       </div>
+      ${ui.lastMeet?.meet_url ? `
+        <div class="gw-last-meet">
+          <div><strong>${esc(ui.lastMeet.title || 'Google Meet')}</strong><small>Réunion créée dans Google Agenda</small></div>
+          <a href="${esc(ui.lastMeet.meet_url)}" target="_blank" rel="noopener">📹 Rejoindre</a>
+        </div>` : ''}
       ${actionableRequests().length ? `<div class="gw-action-callout"><b>${actionableRequests().length}</b> demande${actionableRequests().length > 1 ? 's' : ''} à traiter</div>` : ''}
       ${renderMeetingList()}
     `;
@@ -409,15 +415,10 @@
   }
 
   function normalizeSpaces(spaces) {
-    const cachedProjects = projects();
-    return (spaces || []).map(s => {
-      let projectClientKey = null;
-      if (s.project_id) {
-        const hit = cachedProjects.find(p => p.uuid === s.project_id || p.databaseId === s.project_id);
-        projectClientKey = hit?.id || null;
-      }
-      return { ...s, project_client_key: projectClientKey };
-    });
+    return (spaces || []).map(s => ({
+      ...s,
+      project_client_key: s.project_client_key || null
+    }));
   }
 
   async function syncChat(background = false) {
@@ -586,8 +587,8 @@
       });
       ui.form = null;
       if (result?.meet_url) {
+        ui.lastMeet = { title, meet_url: result.meet_url };
         showToast('Google Meet créé', 'Le lien Meet est prêt et l’événement a été ajouté à Google Agenda.');
-        window.open(result.meet_url, '_blank', 'noopener');
       } else {
         showToast('Réunion créée', 'L’événement a été ajouté à Google Agenda.');
       }
