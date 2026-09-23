@@ -7,7 +7,7 @@ const JSON_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
 };
 
-const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.5" };
+const SERVER_INFO = { name: "SpeedArti Pilotage MCP", version: "16.6" };
 const SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"];
 const REQUIRED_SCOPE = "email";
 
@@ -344,6 +344,26 @@ async function listIdeasContext(db: any) {
   });
 }
 
+function projectContextRows(projects: any[]) {
+  const byId = new Map((projects || []).map((project: any) => [project.id, project]));
+  return (projects || []).map((project: any) => {
+    const children = (projects || []).filter((child: any) => child.parent_project_id === project.id);
+    const parent: any = project.parent_project_id ? byId.get(project.parent_project_id) : null;
+    return {
+      client_key: project.client_key,
+      name: project.name,
+      status: project.status,
+      priority: project.priority,
+      progress: project.progress,
+      parent_project_client_key: parent?.client_key || null,
+      child_project_client_keys: children.map((child: any) => child.client_key),
+      progress_mode: children.length ? "automatic_tree_tasks" : "manual",
+      blocker: project.blocker,
+      next_action: project.next_action
+    };
+  });
+}
+
 async function listContext(db: any, auth: any, args: any) {
   const includeCompleted = args?.include_completed === true;
   let projectIds: string[] = [];
@@ -351,7 +371,7 @@ async function listContext(db: any, auth: any, args: any) {
   if (auth.member.role === "admin") {
     const { data } = await db
       .from("projects")
-      .select("id,client_key,name,status,priority,progress,blocker,next_action")
+      .select("id,client_key,name,status,priority,progress,manual_progress,parent_project_id,tree_sort_order,blocker,next_action")
       .is("archived_at", null)
       .order("updated_at", { ascending: false });
     const projects = data || [];
@@ -372,15 +392,7 @@ async function listContext(db: any, auth: any, args: any) {
     return {
       member: auth.member.client_key,
       member_name: auth.member.display_name,
-      projects: projects.map((p: any) => ({
-        client_key: p.client_key,
-        name: p.name,
-        status: p.status,
-        priority: p.priority,
-        progress: p.progress,
-        blocker: p.blocker,
-        next_action: p.next_action
-      })),
+      projects: projectContextRows(projects),
       tasks: (tasks || []).map((t: any) => ({
         client_key: t.client_key,
         title: t.title,
@@ -405,7 +417,7 @@ async function listContext(db: any, auth: any, args: any) {
   const { data: projects } = projectIds.length
     ? await db
         .from("projects")
-        .select("id,client_key,name,status,priority,progress,blocker,next_action")
+        .select("id,client_key,name,status,priority,progress,manual_progress,parent_project_id,tree_sort_order,blocker,next_action")
         .in("id", projectIds)
         .is("archived_at", null)
         .order("updated_at", { ascending: false })
@@ -429,15 +441,7 @@ async function listContext(db: any, auth: any, args: any) {
   return {
     member: auth.member.client_key,
     member_name: auth.member.display_name,
-    projects: (projects || []).map((p: any) => ({
-      client_key: p.client_key,
-      name: p.name,
-      status: p.status,
-      priority: p.priority,
-      progress: p.progress,
-      blocker: p.blocker,
-      next_action: p.next_action
-    })),
+    projects: projectContextRows(projects || []),
     tasks: tasks.map((t: any) => ({
       client_key: t.client_key,
       title: t.title,
@@ -466,7 +470,7 @@ async function callIngest(auth: any, token: string, args: any) {
     metadata: {
       ...(args?.metadata || {}),
       source_bridge: "pilotage-mcp",
-      mcp_server_version: "16.5"
+      mcp_server_version: "16.6"
     },
     dry_run: args?.dry_run === true
   };
@@ -570,7 +574,7 @@ Deno.serve(async (req: Request) => {
         ? "Deux outils de lecture SpeedArti Pilotage sont visibles. Ils demanderont la connexion OAuth à leur premier appel."
         : auth.kind === "oauth"
           ? "Connexion ChatGPT SpeedArti Pilotage en lecture seule. Vérifie d'abord getPilotageProfile puis utilise listPilotageContext."
-          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Les idées sont des signaux en lecture seule : ne les valide et ne les transforme jamais automatiquement. Les votes ont trois positions (J’aime, J’aime pas, neutre) et seuls les J’aime comptent pour le seuil automatique À étudier. Ne remonte que du travail réellement effectué."
+          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Les idées sont des signaux en lecture seule : ne les valide et ne les transforme jamais automatiquement. Les votes ont trois positions (J’aime, J’aime pas, neutre) et seuls les J’aime comptent pour le seuil automatique À étudier. Les projets peuvent être imbriqués sur 3 niveaux maximum ; la progression d’un projet qui contient des sous-projets est calculée automatiquement à partir des tâches de tout son sous-arbre. Ne remonte que du travail réellement effectué."
     }), 200, { "Mcp-Session-Id": crypto.randomUUID() });
   }
 
@@ -588,7 +592,7 @@ Deno.serve(async (req: Request) => {
         ? "Outils de lecture visibles ; OAuth requis à l'appel."
         : auth.kind === "oauth"
           ? "Connexion OAuth SpeedArti Pilotage lecture seule."
-          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Les idées sont des signaux en lecture seule : ne les valide et ne les transforme jamais automatiquement. Les votes ont trois positions (J’aime, J’aime pas, neutre) et seuls les J’aime comptent pour le seuil automatique À étudier.",
+          : "Utilise listPilotageContext avant d'associer un événement à un projet ou une tâche. Les idées sont des signaux en lecture seule : ne les valide et ne les transforme jamais automatiquement. Les votes ont trois positions (J’aime, J’aime pas, neutre) et seuls les J’aime comptent pour le seuil automatique À étudier. Les projets peuvent être imbriqués sur 3 niveaux maximum ; la progression d’un projet qui contient des sous-projets est calculée automatiquement à partir des tâches de tout son sous-arbre.",
       ttlMs: 60000,
       cacheScope: "private"
     }));
