@@ -3222,6 +3222,16 @@ function bindEvents() {
   document.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.page)));
   document.querySelectorAll('[data-mobile-page]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.mobilePage)));
   document.querySelectorAll('[data-project]').forEach(el => el.addEventListener('click', () => { selectedProjectId = el.dataset.project; projectDetailTab = 'overview'; currentPage = 'projects'; render(); }));
+  document.querySelectorAll('[data-project-open]').forEach(el => el.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = el.dataset.projectOpen;
+    if (!id || !project(id)) return;
+    selectedProjectId = id;
+    projectDetailTab = 'overview';
+    currentPage = 'projects';
+    render();
+  }));
   document.querySelectorAll('[data-complete]').forEach(el => el.addEventListener('click', () => completeTask(el.dataset.complete)));
   document.querySelectorAll('[data-task-status]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); advanceTaskStatus(el.dataset.taskStatus); }));
   document.querySelectorAll('[data-team-planning]').forEach(el => el.addEventListener('click', () => openTeamPlanning(el.dataset.teamPlanning)));
